@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Feynman</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <section id="screen-start" class="screen">
+      <h1>Feynman</h1>
+      <p class="muted">Voice-first mental math. Press &amp; hold the button (or spacebar) to answer.</p>
+      <button id="btn-start" class="primary">Start session</button>
+    </section>
+
+    <section id="screen-session" class="screen hidden">
+      <div class="meta"><span id="position"></span></div>
+      <div id="prompt"></div>
+      <button id="btn-ptt" disabled>Press &amp; hold to answer</button>
+      <div id="status"></div>
+      <div id="result"></div>
+      <button id="btn-end" class="secondary">End session</button>
+    </section>
+
+    <section id="screen-review" class="screen hidden">
+      <h2>Session review</h2>
+      <div id="review"></div>
+      <div class="actions">
+        <button id="btn-restart" class="primary">New session</button>
+      </div>
+    </section>
+  </main>
+
+  <aside id="debug">
+    <header>
+      <h3>Debug</h3>
+      <div class="dbg-actions">
+        <span id="dbg-status" class="dbg-dot off"></span>
+        <button id="btn-clear" class="tiny">clear</button>
+      </div>
+    </header>
+    <div id="events"></div>
+  </aside>
+
+  <script src="/debug.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

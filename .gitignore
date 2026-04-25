@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.idea/
+.vscode/
+.claude/settings.local.json
+
+data/
+logs/
+*.db
+*.db-journal
+*.wav
+*.aiff
+*.webm
+.env

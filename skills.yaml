@@ -1,0 +1,53 @@
+- id: addition
+  parent: arithmetic
+  display_name: Addition
+  target_latency_ms: 5000
+  tolerance:
+    type: exact
+  parameter_schema:
+    digit_range: [1, 3]
+  templates:
+    - "What is {a} plus {b}?"
+
+- id: subtraction
+  parent: arithmetic
+  display_name: Subtraction
+  target_latency_ms: 5000
+  tolerance:
+    type: exact
+  parameter_schema:
+    operand_range: [10, 99]
+  templates:
+    - "What is {a} minus {b}?"
+
+- id: multiplication
+  parent: arithmetic
+  display_name: Multiplication
+  target_latency_ms: 6000
+  tolerance:
+    type: exact
+  parameter_schema:
+    factor_range: [2, 12]
+  templates:
+    - "What is {a} times {b}?"
+
+- id: percent_of
+  parent: percentages
+  display_name: Percent of a number
+  target_latency_ms: 9000
+  tolerance:
+    type: money
+  parameter_schema:
+    percentages: [5, 10, 15, 18, 20, 25, 50]
+  templates:
+    - "What is {pct} percent of {base}?"
+
+- id: time_elapsed
+  parent: time
+  display_name: Time elapsed
+  target_latency_ms: 9000
+  tolerance:
+    type: exact
+  parameter_schema: {}
+  templates:
+    - "If you start at {start} and finish at {end}, how many minutes elapsed?"
