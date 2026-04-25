@@ -93,6 +93,17 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
 #result.skipped { color: #888; }
 
 .actions { margin-top: 16px; }
+.actions.row { display: flex; gap: 12px; align-items: center; }
+
+#feedback {
+  text-align: center;
+  font-size: 14px;
+  color: #c9b86d;
+  min-height: 1.5em;
+  margin: 4px 0 12px 0;
+  padding: 0 16px;
+  font-style: italic;
+}
 
 aside#debug {
   border-left: 1px solid #25282e;

@@ -6,13 +6,13 @@ Owns no persistent state; pending-question state is held in memory only between
 
 import uuid
 
-from server import generator, grader, mastery, parser, scheduler, stt, tts
+from server import feedback, generator, grader, mastery, parser, scheduler, stt, tts
 from server.events import EventBus
 from server.storage import Storage
 
 
 class Orchestrator:
-    def __init__(self, storage: Storage, bus: EventBus, target_questions: int = 12):
+    def __init__(self, storage: Storage, bus: EventBus, target_questions: int = 5):
         self.storage = storage
         self.bus = bus
         self.target_questions = target_questions
@@ -143,6 +143,24 @@ class Orchestrator:
             self.bus.emit,
         )
 
+        fb_text: str | None = None
+        if feedback.should_give_feedback(
+            verdict["correct"],
+            parsed["skipped"],
+            resolution_lat,
+            skill["target_latency_ms"],
+        ):
+            fb_text = feedback.generate(
+                prompt=q["prompt"],
+                expected=q["expected"],
+                parsed=parsed["value"],
+                correct=verdict["correct"],
+                skipped=parsed["skipped"],
+                latency_ms=resolution_lat,
+                target_ms=skill["target_latency_ms"],
+                emit=self.bus.emit,
+            )
+
         del self._active[sid]
 
         return {
@@ -154,6 +172,7 @@ class Orchestrator:
             "onset_latency_ms": onset_lat,
             "resolution_latency_ms": resolution_lat,
             "rule": verdict["rule"],
+            "feedback": fb_text,
             "position": q["position"],
             "target_questions": self.target_questions,
         }

@@ -2,19 +2,24 @@
 
 import asyncio
 import json
+import os
 import tempfile
 import uuid
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from server import stt, tts
-from server.events import EventBus
-from server.orchestrator import Orchestrator
-from server.storage import Storage
+# Load .env (if present) before any module reads OPENAI_API_KEY.
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+from server import tts  # noqa: E402
+from server.events import EventBus  # noqa: E402
+from server.orchestrator import Orchestrator  # noqa: E402
+from server.storage import Storage  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
@@ -38,17 +43,20 @@ orch = Orchestrator(storage, bus)
 
 
 @app.on_event("startup")
-async def warm_models():
-    """Pre-load the Whisper model so the first transcription is fast."""
-    bus.emit("stt.loading_model", model="small.en")
-    print("[startup] loading whisper model (first run downloads ~480 MB)…", flush=True)
-    try:
-        await asyncio.to_thread(stt.warm)
-        bus.emit("stt.model_ready")
-        print("[startup] whisper model ready", flush=True)
-    except Exception as e:
-        bus.emit("stt.model_error", error=str(e))
-        print(f"[startup] whisper model failed to load: {e}", flush=True)
+async def check_env():
+    if not os.environ.get("OPENAI_API_KEY"):
+        bus.emit(
+            "startup.warning",
+            message="OPENAI_API_KEY is not set — STT and feedback will fail.",
+        )
+        print(
+            "[startup] WARNING: OPENAI_API_KEY not set. "
+            "Set it in the environment or create a .env file at the repo root.",
+            flush=True,
+        )
+    else:
+        bus.emit("startup.ready")
+        print("[startup] ready (OpenAI key detected)", flush=True)
 
 
 @app.post("/session/start")

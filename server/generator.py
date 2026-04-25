@@ -79,44 +79,11 @@ def _gen_percent_of(mastery: float) -> dict:
     }
 
 
-def _gen_time_elapsed(mastery: float) -> dict:
-    if mastery < 0.5:
-        # within an hour
-        start_h = random.randint(1, 11)
-        start_m = random.randint(0, 30)
-        duration = random.randint(5, 59 - start_m)
-    else:
-        # span hours
-        start_h = random.randint(1, 11)
-        start_m = random.randint(0, 59)
-        duration = random.randint(20, 120)
-
-    end_total = start_h * 60 + start_m + duration
-    end_h_raw = end_total // 60
-    end_m = end_total % 60
-    end_h = end_h_raw if end_h_raw <= 12 else end_h_raw - 12
-
-    return {
-        "prompt": (
-            f"If you start at {start_h}:{start_m:02d} "
-            f"and finish at {end_h}:{end_m:02d}, how many minutes elapsed?"
-        ),
-        "expected": float(duration),
-        "parameters": {
-            "start": f"{start_h}:{start_m:02d}",
-            "end": f"{end_h}:{end_m:02d}",
-            "duration_min": duration,
-            "spans_hour": (start_m + duration) >= 60,
-        },
-    }
-
-
 GENERATORS = {
     "addition": _gen_addition,
     "subtraction": _gen_subtraction,
     "multiplication": _gen_multiplication,
     "percent_of": _gen_percent_of,
-    "time_elapsed": _gen_time_elapsed,
 }
 
 

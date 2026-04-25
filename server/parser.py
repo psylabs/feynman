@@ -28,6 +28,18 @@ SKIP_PATTERNS = [
     r"\bdunno\b",
 ]
 
+# Common Whisper homophones for short numeric utterances.
+# Only applied when the entire (cleaned) transcript is a single homophone word —
+# we don't want to rewrite "to" inside longer phrases.
+SHORT_HOMOPHONES: dict[str, int] = {
+    "to": 2, "too": 2,
+    "for": 4, "fore": 4,
+    "ate": 8,
+    "won": 1,
+    "tree": 3,
+    "knot": 0, "naught": 0,
+}
+
 
 def parse(text: str) -> dict:
     """Return {"value": float|None, "skipped": bool, "raw": str}."""
@@ -40,6 +52,11 @@ def parse(text: str) -> dict:
     for pat in SKIP_PATTERNS:
         if re.search(pat, cleaned):
             return {"value": None, "skipped": True, "raw": raw}
+
+    # Single-word homophones Whisper commonly emits for short numeric answers.
+    bare = re.sub(r"[^a-z]", "", cleaned)
+    if bare in SHORT_HOMOPHONES:
+        return {"value": float(SHORT_HOMOPHONES[bare]), "skipped": False, "raw": raw}
 
     # Direct numeric form (digits, possibly negative, possibly decimal)
     m = re.search(r"-?\d+(?:\.\d+)?", cleaned)

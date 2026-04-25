@@ -4,16 +4,14 @@ Personal voice-first cognitive trainer. Mac-local. See [docs/](docs/) for the fu
 
 ## Setup
 
-Requires Python 3.11+, [uv](https://github.com/astral-sh/uv), and `ffmpeg` (used by Whisper for audio decoding):
+Requires Python 3.11+, [uv](https://github.com/astral-sh/uv), and an OpenAI API key (used for STT and short tutor-style feedback):
 
 ```bash
-brew install ffmpeg
 uv venv
 source .venv/bin/activate
 uv pip install -e .
+cp .env.example .env  # then put your OPENAI_API_KEY in .env
 ```
-
-First run downloads the Whisper model (~480 MB for `small.en`).
 
 ## Run
 

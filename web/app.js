@@ -11,6 +11,8 @@
   let stream = null;
   let recording = false;
   let advancing = false;
+  let advanceTimer = null;
+  let lastResult = null;
 
   function showScreen(id) {
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
@@ -28,8 +30,11 @@
 
   async function nextQuestion() {
     advancing = false;
+    if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
     $("result").textContent = "";
     $("result").className = "";
+    $("feedback").textContent = "";
+    $("btn-next").classList.add("hidden");
     $("status").textContent = "Loading…";
     $("btn-ptt").disabled = true;
     $("prompt").textContent = "";
@@ -124,6 +129,8 @@
       return;
     }
 
+    lastResult = r;
+
     let label, cls;
     if (r.skipped) {
       label = "Skipped";
@@ -142,16 +149,25 @@
     $("result").textContent = `${label}${detail}${timing}`;
     $("result").className = cls;
     $("status").textContent = `“${r.transcript || ""}”`;
+    $("feedback").textContent = r.feedback || "";
+    $("btn-next").classList.remove("hidden");
 
     if (advancing) return;
     advancing = true;
-    setTimeout(async () => {
-      if (r.position >= r.target_questions) {
-        await endSession();
-      } else {
-        await nextQuestion();
-      }
-    }, 1500);
+    const delay = r.feedback ? 7000 : 1500;
+    advanceTimer = setTimeout(advanceNow, delay);
+  }
+
+  async function advanceNow() {
+    if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+    if (!lastResult) return;
+    const r = lastResult;
+    lastResult = null;
+    if (r.position >= r.target_questions) {
+      await endSession();
+    } else {
+      await nextQuestion();
+    }
   }
 
   function fmt(v) {
@@ -246,4 +262,5 @@
   $("btn-start").addEventListener("click", startSession);
   $("btn-end").addEventListener("click", endSession);
   $("btn-restart").addEventListener("click", startSession);
+  $("btn-next").addEventListener("click", advanceNow);
 })();

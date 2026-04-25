@@ -12,7 +12,8 @@ dependencies = [
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
     "pyyaml>=6",
-    "faster-whisper>=1.0",
+    "openai>=1.40",
+    "python-dotenv>=1.0",
 ]
 
 [tool.setuptools]
