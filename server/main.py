@@ -197,8 +197,19 @@ async def events():
     )
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Static files with Cache-Control: no-store. Useful during MVP iteration
+    so the browser never serves a stale app.js or index.html after a deploy."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+
 # Static frontend mounted last so API routes take precedence
-app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")
+app.mount("/", NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="static")
 
 
 def main():
