@@ -4,13 +4,13 @@ Personal voice-first cognitive trainer. Mac-local. See [docs/](docs/) for the fu
 
 ## Setup
 
-Requires Python 3.11+ and `ffmpeg` (used by Whisper for audio decoding):
+Requires Python 3.11+, [uv](https://github.com/astral-sh/uv), and `ffmpeg` (used by Whisper for audio decoding):
 
 ```bash
 brew install ffmpeg
-python3 -m venv .venv
+uv venv
 source .venv/bin/activate
-pip install -e .
+uv pip install -e .
 ```
 
 First run downloads the Whisper model (~480 MB for `small.en`).

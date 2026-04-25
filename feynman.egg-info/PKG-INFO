@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: feynman
+Version: 0.0.1
+Summary: Personal voice-first cognitive trainer
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.27
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: pyyaml>=6
+Requires-Dist: faster-whisper>=1.0

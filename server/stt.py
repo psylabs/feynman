@@ -20,7 +20,13 @@ def _get_model():
     return _MODEL
 
 
+def warm() -> None:
+    """Eagerly load the Whisper model. Called once at server startup."""
+    _get_model()
+
+
 def transcribe(audio_path: str, emit: Callable) -> dict:
+    emit("stt.starting", path=audio_path, model=_MODEL_NAME)
     start = time.time()
     model = _get_model()
     segments, info = model.transcribe(

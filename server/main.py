@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from server import tts
+from server import stt, tts
 from server.events import EventBus
 from server.orchestrator import Orchestrator
 from server.storage import Storage
@@ -37,17 +37,31 @@ for skill in skill_defs:
 orch = Orchestrator(storage, bus)
 
 
+@app.on_event("startup")
+async def warm_models():
+    """Pre-load the Whisper model so the first transcription is fast."""
+    bus.emit("stt.loading_model", model="small.en")
+    print("[startup] loading whisper model (first run downloads ~480 MB)…", flush=True)
+    try:
+        await asyncio.to_thread(stt.warm)
+        bus.emit("stt.model_ready")
+        print("[startup] whisper model ready", flush=True)
+    except Exception as e:
+        bus.emit("stt.model_error", error=str(e))
+        print(f"[startup] whisper model failed to load: {e}", flush=True)
+
+
 @app.post("/session/start")
 def session_start():
     return orch.start_session()
 
 
 @app.post("/session/next")
-def session_next(payload: dict):
+async def session_next(payload: dict):
     sid = payload.get("session_id")
     if not sid:
         raise HTTPException(400, "session_id required")
-    return orch.next_question(sid)
+    return await asyncio.to_thread(orch.next_question, sid)
 
 
 @app.post("/session/submit")
@@ -71,7 +85,8 @@ async def session_submit(
         path=str(audio_path),
     )
     try:
-        return orch.submit_answer(
+        return await asyncio.to_thread(
+            orch.submit_answer,
             session_id,
             qid,
             str(audio_path),
@@ -105,14 +120,12 @@ async def events():
 
     async def stream():
         try:
-            # initial heartbeat so the client knows the stream is open
             yield f"data: {json.dumps({'ts': 0, 'type': 'sse.connected'})}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
                     yield f"data: {json.dumps(event, default=str)}\n\n"
                 except asyncio.TimeoutError:
-                    # heartbeat to keep the connection alive
                     yield ": keepalive\n\n"
         finally:
             bus.unsubscribe(queue)
