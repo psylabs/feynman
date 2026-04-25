@@ -1,3 +1,9 @@
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,
   parent TEXT,
@@ -10,6 +16,8 @@ CREATE TABLE IF NOT EXISTS skills (
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'drill',
   started_at REAL NOT NULL,
   ended_at REAL
 );
@@ -38,13 +46,16 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 
 CREATE TABLE IF NOT EXISTS skill_state (
-  skill_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  skill_id TEXT NOT NULL,
   rolling_accuracy REAL,
   median_latency_ms INTEGER,
   mastery REAL DEFAULT 0.5,
   last_seen_at REAL,
-  attempt_count INTEGER DEFAULT 0
+  attempt_count INTEGER DEFAULT 0,
+  PRIMARY KEY (user_id, skill_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_attempts_skill ON attempts(skill_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_attempts_session ON attempts(session_id);
+-- idx_sessions_user is created by the migration step after user_id is ensured.

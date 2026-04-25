@@ -5,8 +5,14 @@ import time
 from typing import Callable
 
 
-def update(storage, skill_id: str, target_latency_ms: int, emit: Callable) -> None:
-    attempts = storage.recent_attempts_for_skill(skill_id, limit=10)
+def update(
+    storage,
+    user_id: str,
+    skill_id: str,
+    target_latency_ms: int,
+    emit: Callable,
+) -> None:
+    attempts = storage.recent_attempts_for_skill(user_id, skill_id, limit=10)
     counted = [a for a in attempts if not a.get("skipped")]
 
     if not counted:
@@ -34,7 +40,7 @@ def update(storage, skill_id: str, target_latency_ms: int, emit: Callable) -> No
         "median_latency_ms": int(median_latency) if median_latency else None,
         "mastery": mastery,
         "last_seen_at": time.time(),
-        "attempt_count": storage.skill_attempt_count(skill_id),
+        "attempt_count": storage.skill_attempt_count(user_id, skill_id),
     }
-    storage.update_skill_state(skill_id, state)
-    emit("mastery.updated", skill_id=skill_id, **state)
+    storage.update_skill_state(user_id, skill_id, state)
+    emit("mastery.updated", user_id=user_id, skill_id=skill_id, **state)

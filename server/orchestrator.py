@@ -1,35 +1,112 @@
 """Session orchestrator — composes the turn lifecycle.
 
-Owns no persistent state; pending-question state is held in memory only between
-`next_question` and `submit_answer` calls and keyed by session id.
+Holds no persistent state; pending-question state lives in memory between
+`next_question` and `submit_answer` calls, keyed by session id.
+
+Two session modes:
+  - drill: scheduler picks a skill, generator picks a difficulty matched to
+    the user's current mastery on that skill (5 questions).
+  - eval: a fixed 20-question plan walks each skill across three difficulty
+    levels so we get a real baseline. Bypasses the scheduler.
 """
 
 import uuid
 
-from server import feedback, generator, grader, mastery, parser, scheduler, stt, tts
+from server import (
+    eval_plan,
+    feedback,
+    generator,
+    grader,
+    mastery,
+    parser,
+    scheduler,
+    stt,
+    tts,
+)
 from server.events import EventBus
 from server.storage import Storage
 
+DRILL_LENGTH = 5
+
 
 class Orchestrator:
-    def __init__(self, storage: Storage, bus: EventBus, target_questions: int = 5):
+    def __init__(self, storage: Storage, bus: EventBus):
         self.storage = storage
         self.bus = bus
-        self.target_questions = target_questions
-        self._active: dict[str, dict] = {}  # session_id -> pending question
+        self._active: dict[str, dict] = {}
 
-    def start_session(self) -> dict:
-        sid = self.storage.create_session()
-        self.bus.emit("session.started", session_id=sid, target=self.target_questions)
-        return {"session_id": sid, "target_questions": self.target_questions}
+    # ---- session lifecycle -------------------------------------------------
+
+    def start_session(self, user_id: str, mode: str = "drill") -> dict:
+        if mode not in ("drill", "eval"):
+            raise ValueError(f"invalid mode: {mode}")
+        if not self.storage.get_user(user_id):
+            raise ValueError(f"unknown user: {user_id}")
+
+        # Make sure this user has a skill_state row for every active skill.
+        self.storage.ensure_skill_states_for_user(user_id)
+
+        sid = self.storage.create_session(user_id, mode)
+        target = eval_plan.EVAL_LENGTH if mode == "eval" else DRILL_LENGTH
+
+        self.bus.emit(
+            "session.started",
+            session_id=sid,
+            user_id=user_id,
+            mode=mode,
+            target=target,
+        )
+        return {"session_id": sid, "mode": mode, "target_questions": target}
+
+    def end_session(self, sid: str) -> dict:
+        session = self.storage.get_session(sid)
+        if not session:
+            raise ValueError(f"unknown session: {sid}")
+
+        self.storage.end_session(sid)
+        self._active.pop(sid, None)
+        attempts = self.storage.session_attempts(sid)
+        self.bus.emit(
+            "session.ended",
+            session_id=sid,
+            mode=session["mode"],
+            attempt_count=len(attempts),
+        )
+        return {
+            "session_id": sid,
+            "mode": session["mode"],
+            "attempts": attempts,
+        }
+
+    # ---- per-turn ----------------------------------------------------------
 
     def next_question(self, sid: str) -> dict:
-        states = self.storage.get_all_skill_states()
-        choice = scheduler.pick_skill(states, self.bus.emit)
-        problem = generator.generate(choice["skill_id"], choice["mastery"])
+        session = self.storage.get_session(sid)
+        if not session:
+            raise ValueError(f"unknown session: {sid}")
+        user_id = session["user_id"]
+        mode = session["mode"]
+        position = self.storage.session_attempt_count(sid) + 1
+        target = eval_plan.EVAL_LENGTH if mode == "eval" else DRILL_LENGTH
+
+        if mode == "eval":
+            skill_id, level = eval_plan.step(position)
+            self.bus.emit(
+                "eval.step",
+                position=position,
+                skill_id=skill_id,
+                level=level,
+            )
+            problem = generator.generate(skill_id, level=level)
+        else:
+            states = self.storage.get_all_skill_states(user_id)
+            choice = scheduler.pick_skill(states, self.bus.emit)
+            skill_id = choice["skill_id"]
+            problem = generator.generate(skill_id, mastery=choice["mastery"])
+
         self.bus.emit(
             "generator.produced",
-            skill_id=choice["skill_id"],
+            skill_id=skill_id,
             prompt=problem["prompt"],
             expected=problem["expected"],
             parameters=problem["parameters"],
@@ -38,10 +115,11 @@ class Orchestrator:
         audio = tts.synthesize(problem["prompt"], self.bus.emit)
 
         qid = uuid.uuid4().hex
-        position = self.storage.session_attempt_count(sid) + 1
         self._active[sid] = {
             "qid": qid,
-            "skill_id": choice["skill_id"],
+            "user_id": user_id,
+            "mode": mode,
+            "skill_id": skill_id,
             "prompt": problem["prompt"],
             "expected": problem["expected"],
             "parameters": problem["parameters"],
@@ -54,9 +132,10 @@ class Orchestrator:
             "prompt_text": problem["prompt"],
             "audio_url": f"/audio/{audio['filename']}",
             "audio_duration_ms": audio["duration_ms"],
-            "skill_id": choice["skill_id"],
+            "skill_id": skill_id,
             "position": position,
-            "target_questions": self.target_questions,
+            "target_questions": target,
+            "mode": mode,
         }
 
     def submit_answer(
@@ -76,11 +155,13 @@ class Orchestrator:
         if not skill:
             raise ValueError(f"skill not found: {q['skill_id']}")
 
+        target = (
+            eval_plan.EVAL_LENGTH if q["mode"] == "eval" else DRILL_LENGTH
+        )
+
         trans = stt.transcribe(audio_path, self.bus.emit)
         text = (trans.get("text") or "").strip()
 
-        # Empty / unusable audio: don't grade, don't record, keep the question
-        # active so the user can retry without polluting their stats.
         if len(text) < 1:
             self.bus.emit(
                 "answer.no_audio",
@@ -93,7 +174,7 @@ class Orchestrator:
                 "message": "Didn't catch that — try again.",
                 "transcript": text,
                 "position": q["position"],
-                "target_questions": self.target_questions,
+                "target_questions": target,
             }
 
         parsed = parser.parse(text)
@@ -104,8 +185,6 @@ class Orchestrator:
             skipped=parsed["skipped"],
         )
 
-        # Treat unparseable non-empty transcripts (e.g. "Stay" from a misheard
-        # number) the same as empty audio: retry, don't pollute mastery.
         if parsed["value"] is None and not parsed["skipped"]:
             self.bus.emit(
                 "answer.unparseable",
@@ -118,7 +197,7 @@ class Orchestrator:
                 "message": f"Couldn't parse a number from “{text}” — try again.",
                 "transcript": text,
                 "position": q["position"],
-                "target_questions": self.target_questions,
+                "target_questions": target,
             }
 
         if parsed["skipped"]:
@@ -174,6 +253,7 @@ class Orchestrator:
 
         mastery.update(
             self.storage,
+            q["user_id"],
             q["skill_id"],
             skill["target_latency_ms"],
             self.bus.emit,
@@ -200,17 +280,21 @@ class Orchestrator:
             "rule": verdict["rule"],
             "feedback_pending": wants_feedback,
             "position": q["position"],
-            "target_questions": self.target_questions,
+            "target_questions": target,
+            "mode": q["mode"],
         }
 
+    # ---- async feedback ----------------------------------------------------
+
     def generate_feedback_for(self, attempt_id: int) -> None:
-        """Background task: produce a coaching sentence for an attempt and
-        emit it on the bus so the frontend can render it via SSE."""
         attempt = self.storage.get_attempt(attempt_id)
         if not attempt:
             return
         skill = self.storage.get_skill(attempt["skill_id"])
         if not skill:
+            return
+        user_id = attempt.get("user_id")
+        if not user_id:
             return
 
         params = attempt.get("parameters") or {}
@@ -222,7 +306,9 @@ class Orchestrator:
             except (TypeError, ValueError):
                 params = {}
 
-        recent = self.storage.recent_attempts_for_skill(attempt["skill_id"], limit=10)
+        recent = self.storage.recent_attempts_for_skill(
+            user_id, attempt["skill_id"], limit=10
+        )
 
         fb_text = feedback.generate(
             prompt=attempt["prompt_text"],
@@ -241,18 +327,5 @@ class Orchestrator:
         if fb_text:
             self.storage.update_attempt_notes(attempt_id, fb_text)
             self.bus.emit(
-                "feedback.ready",
-                attempt_id=attempt_id,
-                text=fb_text,
+                "feedback.ready", attempt_id=attempt_id, text=fb_text
             )
-
-    def end_session(self, sid: str) -> dict:
-        self.storage.end_session(sid)
-        self._active.pop(sid, None)
-        attempts = self.storage.session_attempts(sid)
-        self.bus.emit(
-            "session.ended",
-            session_id=sid,
-            attempt_count=len(attempts),
-        )
-        return {"session_id": sid, "attempts": attempts}

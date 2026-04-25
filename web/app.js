@@ -5,6 +5,7 @@
   let sessionId = null;
   let currentQid = null;
   let currentAttemptId = null;
+  let currentMode = "drill";
   let promptEndTs = null;
   let onsetTs = null;
   let mediaRecorder = null;
@@ -20,18 +21,64 @@
     $(id).classList.remove("hidden");
   }
 
-  async function startSession() {
-    const r = await fetch("/session/start", { method: "POST" }).then((r) => r.json());
+  // ---- start screen state ------------------------------------------------
+
+  function refreshStartScreen() {
+    const user = window.feynmanUser?.getCurrent?.();
+    $("greeting").textContent = user ? `Hi, ${user.name}.` : "Hi.";
+    if (!user) return;
+    if (user.has_completed_eval) {
+      $("eval-banner").classList.add("hidden");
+      $("btn-start-eval").textContent = "Re-do baseline";
+      $("btn-start-eval").classList.remove("primary");
+      $("btn-start-eval").classList.add("secondary");
+      $("btn-start-drill").classList.add("primary");
+      $("btn-start-drill").classList.remove("secondary");
+    } else {
+      $("eval-banner").classList.remove("hidden");
+      $("btn-start-eval").textContent = "Take baseline (20q)";
+      $("btn-start-eval").classList.add("primary");
+      $("btn-start-eval").classList.remove("secondary");
+      $("btn-start-drill").classList.remove("primary");
+      $("btn-start-drill").classList.add("secondary");
+    }
+  }
+
+  window.addEventListener("feynman:user-changed", refreshStartScreen);
+
+  // ---- session lifecycle -------------------------------------------------
+
+  async function startSession(mode) {
+    const user = window.feynmanUser?.getCurrent?.();
+    if (!user) {
+      alert("Pick a player first.");
+      return;
+    }
+    const r = await fetch("/session/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: user.id, mode }),
+    }).then((res) => res.json());
+    if (r.detail) {
+      alert(r.detail);
+      return;
+    }
     sessionId = r.session_id;
+    currentMode = r.mode;
     showScreen("screen-session");
+    $("mode-tag").textContent = currentMode === "eval" ? "Baseline" : "Drill";
     $("result").textContent = "";
     $("result").className = "";
+    $("feedback").textContent = "";
     await nextQuestion();
   }
 
   async function nextQuestion() {
     advancing = false;
-    if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+    if (advanceTimer) {
+      clearTimeout(advanceTimer);
+      advanceTimer = null;
+    }
     $("result").textContent = "";
     $("result").className = "";
     $("feedback").textContent = "";
@@ -44,7 +91,7 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId }),
-    }).then((r) => r.json());
+    }).then((res) => res.json());
 
     currentQid = r.qid;
     $("prompt").textContent = r.prompt_text;
@@ -60,7 +107,6 @@
     try {
       await audio.play();
     } catch (e) {
-      // autoplay blocked — fall back to immediate enable
       promptEndTs = Date.now() / 1000;
       $("status").textContent = "Audio blocked — answer now";
       $("btn-ptt").disabled = false;
@@ -108,9 +154,7 @@
     $("btn-ptt").textContent = "Press & hold to answer";
     $("btn-ptt").disabled = true;
     $("status").textContent = "Transcribing…";
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-    }
+    if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
   }
 
   async function submitAnswer(blob, resolutionTs) {
@@ -124,13 +168,14 @@
 
     let r;
     try {
-      r = await fetch("/session/submit", { method: "POST", body: fd }).then((res) => res.json());
+      r = await fetch("/session/submit", { method: "POST", body: fd }).then((res) =>
+        res.json()
+      );
     } catch (e) {
       $("status").textContent = "Submit failed";
       return;
     }
 
-    // Empty/unusable audio: re-enable PTT, no advance, no recorded attempt.
     if (r.audio_failed) {
       $("status").textContent = r.message || "Didn't catch that — try again";
       $("result").textContent = "";
@@ -167,19 +212,15 @@
 
     if (advancing) return;
     advancing = true;
-    // If feedback is coming, give it a few seconds to land before advancing.
-    // Otherwise advance briskly. User can always click Next.
     const delay = r.feedback_pending ? 5000 : 2000;
     advanceTimer = setTimeout(advanceNow, delay);
   }
 
-  // Listen for asynchronous feedback events streamed from the server.
   window.addEventListener("feynman:event", (e) => {
     const ev = e.detail;
     if (!ev || ev.type !== "feedback.ready") return;
     if (!currentAttemptId || ev.attempt_id !== currentAttemptId) return;
     $("feedback").textContent = ev.text || "";
-    // If we were about to advance, extend the timer so the user can read it.
     if (advancing && advanceTimer) {
       clearTimeout(advanceTimer);
       advanceTimer = setTimeout(advanceNow, 6000);
@@ -187,7 +228,10 @@
   });
 
   async function advanceNow() {
-    if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+    if (advanceTimer) {
+      clearTimeout(advanceTimer);
+      advanceTimer = null;
+    }
     if (!lastResult) return;
     const r = lastResult;
     lastResult = null;
@@ -214,10 +258,15 @@
     renderReview(r);
     showScreen("screen-review");
     sessionId = null;
+    // baseline-completed flag may have flipped — refresh user list.
+    if (window.feynmanUser?.refreshFlags) window.feynmanUser.refreshFlags();
   }
 
   function renderReview(r) {
     const a = r.attempts || [];
+    const isEval = r.mode === "eval";
+    $("review-title").textContent = isEval ? "Baseline complete" : "Session review";
+
     if (!a.length) {
       $("review").textContent = "No attempts.";
       return;
@@ -225,7 +274,10 @@
     const total = a.length;
     const correct = a.filter((x) => x.correct).length;
     const skipped = a.filter((x) => x.skipped).length;
-    const lats = a.map((x) => x.resolution_latency_ms).filter((v) => v != null).sort((x, y) => x - y);
+    const lats = a
+      .map((x) => x.resolution_latency_ms)
+      .filter((v) => v != null)
+      .sort((x, y) => x - y);
     const median = lats.length ? lats[Math.floor(lats.length / 2)] : null;
 
     let html = `<div class="summary">
@@ -233,15 +285,23 @@
       <div class="stat"><div class="label">Skipped</div><div class="value">${skipped}</div></div>
       <div class="stat"><div class="label">Median latency</div><div class="value">${median != null ? median + " ms" : "—"}</div></div>
     </div>`;
+
+    if (isEval) {
+      html += renderBaselineMatrix(a);
+    }
+
     html += `<table><thead><tr>
-      <th>#</th><th>Skill</th><th>Prompt</th><th>You</th><th>Expected</th><th class="num">Latency</th><th></th>
+      <th>#</th><th>Skill</th><th>Lvl</th><th>Prompt</th><th>You</th><th>Expected</th><th class="num">Latency</th><th></th>
     </tr></thead><tbody>`;
     for (const x of a) {
       const cls = x.skipped ? "skipped" : x.correct ? "correct" : "wrong";
       const mark = x.skipped ? "—" : x.correct ? "✓" : "✗";
+      const params = parseParams(x.parameters);
+      const lvl = params?.level ?? "—";
       html += `<tr>
         <td>${x.position_in_session}</td>
         <td>${x.skill_name || x.skill_id}</td>
+        <td>${lvl}</td>
         <td>${escapeHtml(x.prompt_text)}</td>
         <td>${x.parsed_answer != null ? fmt(x.parsed_answer) : ""}</td>
         <td>${fmt(x.expected_answer)}</td>
@@ -253,11 +313,52 @@
     $("review").innerHTML = html;
   }
 
+  function renderBaselineMatrix(attempts) {
+    // Group by (skill, level)
+    const by = {};
+    for (const a of attempts) {
+      const params = parseParams(a.parameters) || {};
+      const lvl = params.level || 0;
+      const key = `${a.skill_id}|${lvl}`;
+      if (!by[key]) by[key] = { skill: a.skill_name || a.skill_id, level: lvl, total: 0, correct: 0, lats: [] };
+      by[key].total += 1;
+      if (a.correct) by[key].correct += 1;
+      if (a.resolution_latency_ms) by[key].lats.push(a.resolution_latency_ms);
+    }
+    const rows = Object.values(by).sort((x, y) =>
+      x.skill === y.skill ? x.level - y.level : x.skill.localeCompare(y.skill)
+    );
+    let html = `<h3 class="section">Baseline by skill × level</h3>
+      <table class="matrix"><thead><tr>
+        <th>Skill</th><th>Level</th><th>Acc</th><th class="num">Median ms</th>
+      </tr></thead><tbody>`;
+    for (const r of rows) {
+      const acc = `${r.correct}/${r.total}`;
+      const med = r.lats.length
+        ? r.lats.sort((x, y) => x - y)[Math.floor(r.lats.length / 2)]
+        : null;
+      html += `<tr><td>${r.skill}</td><td>${r.level}</td><td>${acc}</td><td class="num">${med ?? ""}</td></tr>`;
+    }
+    html += "</tbody></table>";
+    return html;
+  }
+
+  function parseParams(raw) {
+    if (!raw) return null;
+    if (typeof raw === "object") return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
   function escapeHtml(s) {
     return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  // Mouse / touch PTT
+  // ---- input bindings ----------------------------------------------------
+
   $("btn-ptt").addEventListener("mousedown", startRecording);
   $("btn-ptt").addEventListener("mouseup", stopRecording);
   $("btn-ptt").addEventListener("mouseleave", stopRecording);
@@ -270,7 +371,6 @@
     stopRecording();
   });
 
-  // Spacebar PTT
   let spaceDown = false;
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !spaceDown && !$("btn-ptt").disabled) {
@@ -287,8 +387,12 @@
     }
   });
 
-  $("btn-start").addEventListener("click", startSession);
+  $("btn-start-eval").addEventListener("click", () => startSession("eval"));
+  $("btn-start-drill").addEventListener("click", () => startSession("drill"));
   $("btn-end").addEventListener("click", endSession);
-  $("btn-restart").addEventListener("click", startSession);
   $("btn-next").addEventListener("click", advanceNow);
+  $("btn-restart-eval").addEventListener("click", () => startSession("eval"));
+  $("btn-restart-drill").addEventListener("click", () => startSession("drill"));
+
+  refreshStartScreen();
 })();

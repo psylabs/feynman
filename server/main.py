@@ -42,7 +42,10 @@ if removed:
     bus.emit("startup.pruned_skills", removed=removed)
 for skill in skill_defs:
     storage.upsert_skill(skill)
-    storage.init_skill_state(skill["id"])
+
+# Make sure every existing user has a skill_state row for every active skill.
+for u in storage.list_users():
+    storage.ensure_skill_states_for_user(u["id"])
 
 orch = Orchestrator(storage, bus)
 
@@ -64,9 +67,42 @@ async def check_env():
         print("[startup] ready (OpenAI key detected)", flush=True)
 
 
+@app.get("/users")
+def users_list():
+    out = []
+    for u in storage.list_users():
+        out.append({
+            "id": u["id"],
+            "name": u["name"],
+            "has_completed_eval": storage.has_completed_eval(u["id"]),
+        })
+    return out
+
+
+@app.post("/users")
+def users_create(payload: dict):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    try:
+        u = storage.create_user(name)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    storage.ensure_skill_states_for_user(u["id"])
+    bus.emit("user.created", user_id=u["id"], name=name)
+    return {"id": u["id"], "name": u["name"], "has_completed_eval": False}
+
+
 @app.post("/session/start")
-def session_start():
-    return orch.start_session()
+def session_start(payload: dict):
+    user_id = payload.get("user_id")
+    mode = payload.get("mode", "drill")
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+    try:
+        return orch.start_session(user_id, mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/session/next")
