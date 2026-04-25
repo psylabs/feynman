@@ -77,6 +77,27 @@ def parse(text: str) -> dict:
     return {"value": None, "skipped": False, "raw": raw}
 
 
+_TENS_WORDS = {"twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
+
+
+def _add_implicit_hundred(tokens: list[str]) -> list[str]:
+    """Convert "one twenty three" → "one hundred twenty three" so the standard
+    parser handles the common spoken form for numbers like 123, 250, 345.
+
+    Only triggers when the first token is a single-digit word (one..nine), the
+    second is a tens word (twenty..ninety), and "hundred"/"thousand"/"million"
+    is not already in the token list.
+    """
+    if len(tokens) < 2:
+        return tokens
+    if any(s in tokens for s in ("hundred", "thousand", "million")):
+        return tokens
+    first, second = tokens[0], tokens[1]
+    if first in WORDS and 1 <= WORDS[first] <= 9 and second in _TENS_WORDS:
+        return [first, "hundred"] + tokens[1:]
+    return tokens
+
+
 def _from_words(text: str) -> float | None:
     text = text.replace("-", " ")
     tokens = re.findall(r"[a-z]+", text)
@@ -87,6 +108,8 @@ def _from_words(text: str) -> float | None:
     if tokens and tokens[0] in ("negative", "minus"):
         negative = True
         tokens = tokens[1:]
+
+    tokens = _add_implicit_hundred(tokens)
 
     # Split on "point" for decimals
     if "point" in tokens:

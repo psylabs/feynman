@@ -129,6 +129,17 @@
       return;
     }
 
+    // Empty/unusable audio: re-enable PTT, no advance, no recorded attempt.
+    if (r.audio_failed) {
+      $("status").textContent = r.message || "Didn't catch that — try again";
+      $("result").textContent = "";
+      $("result").className = "";
+      $("feedback").textContent = "";
+      $("btn-next").classList.add("hidden");
+      $("btn-ptt").disabled = false;
+      return;
+    }
+
     lastResult = r;
 
     let label, cls;

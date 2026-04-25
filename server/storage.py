@@ -208,7 +208,23 @@ class Storage:
                 """,
                 (skill_id, limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d.get("parameters"):
+                try:
+                    d["parameters"] = json.loads(d["parameters"])
+                except (TypeError, ValueError):
+                    pass
+            out.append(d)
+        return out
+
+    def update_attempt_notes(self, attempt_id: int, notes: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE attempts SET notes = ? WHERE id = ?",
+                (notes, attempt_id),
+            )
 
     def skill_attempt_count(self, skill_id: str) -> int:
         with self._conn() as conn:

@@ -77,10 +77,29 @@ class Orchestrator:
             raise ValueError(f"skill not found: {q['skill_id']}")
 
         trans = stt.transcribe(audio_path, self.bus.emit)
-        parsed = parser.parse(trans["text"])
+        text = (trans.get("text") or "").strip()
+
+        # Empty / unusable audio: don't grade, don't record, keep the question
+        # active so the user can retry without polluting their stats.
+        if len(text) < 1:
+            self.bus.emit(
+                "answer.no_audio",
+                session_id=sid,
+                qid=qid,
+                stt_error=trans.get("error"),
+            )
+            return {
+                "audio_failed": True,
+                "message": "Didn't catch that — try again.",
+                "transcript": text,
+                "position": q["position"],
+                "target_questions": self.target_questions,
+            }
+
+        parsed = parser.parse(text)
         self.bus.emit(
             "parser.parsed",
-            text=trans["text"],
+            text=text,
             value=parsed["value"],
             skipped=parsed["skipped"],
         )
@@ -150,6 +169,7 @@ class Orchestrator:
             resolution_lat,
             skill["target_latency_ms"],
         ):
+            recent = self.storage.recent_attempts_for_skill(q["skill_id"], limit=10)
             fb_text = feedback.generate(
                 prompt=q["prompt"],
                 expected=q["expected"],
@@ -158,8 +178,14 @@ class Orchestrator:
                 skipped=parsed["skipped"],
                 latency_ms=resolution_lat,
                 target_ms=skill["target_latency_ms"],
+                skill_id=q["skill_id"],
+                parameters=q["parameters"],
+                recent_attempts=recent,
+                current_attempt_id=attempt_id,
                 emit=self.bus.emit,
             )
+            if fb_text:
+                self.storage.update_attempt_notes(attempt_id, fb_text)
 
         del self._active[sid]
 

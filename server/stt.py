@@ -9,9 +9,11 @@ import time
 from typing import Callable
 
 _CLIENT = None
+_MODEL = "gpt-4o-mini-transcribe"
 _PROMPT_HINT = (
-    "The user is answering a mental math question with a number, "
-    "such as 47, twenty-five, 12.5, or 'skip'."
+    "Transcribe spoken numbers as digits. "
+    "Output 47 not forty-seven, 123 not one twenty-three, 18.5 not eighteen point five. "
+    "Output a single short numeric answer, or the word 'skip' if no number was spoken."
 )
 
 
@@ -30,22 +32,22 @@ def warm() -> None:
 
 
 def transcribe(audio_path: str, emit: Callable) -> dict:
-    emit("stt.starting", path=audio_path, model="whisper-1")
+    emit("stt.starting", path=audio_path, model=_MODEL)
     start = time.time()
     try:
         with open(audio_path, "rb") as f:
             response = _client().audio.transcriptions.create(
-                model="whisper-1",
+                model=_MODEL,
                 file=f,
                 language="en",
                 prompt=_PROMPT_HINT,
             )
-        text = response.text.strip()
+        text = (response.text or "").strip()
     except Exception as e:
         elapsed_ms = int((time.time() - start) * 1000)
         emit("stt.error", error=str(e), elapsed_ms=elapsed_ms)
         return {"text": "", "elapsed_ms": elapsed_ms, "error": str(e)}
 
     elapsed_ms = int((time.time() - start) * 1000)
-    emit("stt.transcribed", text=text, elapsed_ms=elapsed_ms, model="whisper-1")
+    emit("stt.transcribed", text=text, elapsed_ms=elapsed_ms, model=_MODEL)
     return {"text": text, "elapsed_ms": elapsed_ms}
