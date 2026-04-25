@@ -32,9 +32,14 @@ app = FastAPI(title="Feynman")
 bus = EventBus(LOG_DIR)
 storage = Storage(DATA_DIR / "feynman.db")
 
-# Load skills from YAML on startup
+# Load skills from YAML on startup, pruning any rows for skills no longer defined.
 with (ROOT / "skills.yaml").open() as f:
     skill_defs = yaml.safe_load(f) or []
+keep_ids = [s["id"] for s in skill_defs]
+removed = storage.prune_skills_not_in(keep_ids)
+if removed:
+    print(f"[startup] pruned obsolete skills: {removed}", flush=True)
+    bus.emit("startup.pruned_skills", removed=removed)
 for skill in skill_defs:
     storage.upsert_skill(skill)
     storage.init_skill_state(skill["id"])

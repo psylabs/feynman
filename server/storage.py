@@ -71,6 +71,31 @@ class Storage:
                 (skill_id,),
             )
 
+    def prune_skills_not_in(self, keep_ids: list[str]) -> list[str]:
+        """Remove skill definitions and skill_state rows for skills not in `keep_ids`.
+
+        Attempts are kept (historical record). Returns the list of skill ids removed.
+        """
+        if not keep_ids:
+            return []
+        placeholders = ",".join("?" * len(keep_ids))
+        with self._conn() as conn:
+            removed = [
+                r["id"]
+                for r in conn.execute(
+                    f"SELECT id FROM skills WHERE id NOT IN ({placeholders})",
+                    keep_ids,
+                ).fetchall()
+            ]
+            conn.execute(
+                f"DELETE FROM skills WHERE id NOT IN ({placeholders})", keep_ids
+            )
+            conn.execute(
+                f"DELETE FROM skill_state WHERE skill_id NOT IN ({placeholders})",
+                keep_ids,
+            )
+        return removed
+
     def get_all_skill_states(self) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM skill_state").fetchall()
