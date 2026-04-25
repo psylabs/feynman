@@ -103,7 +103,9 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
   margin: 4px 0 12px 0;
   padding: 0 16px;
   font-style: italic;
+  transition: opacity 0.2s ease;
 }
+#feedback:empty { min-height: 0; }
 
 aside#debug {
   border-left: 1px solid #25282e;

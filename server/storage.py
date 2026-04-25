@@ -219,6 +219,21 @@ class Storage:
             out.append(d)
         return out
 
+    def get_attempt(self, attempt_id: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM attempts WHERE id = ?", (attempt_id,)
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("parameters"):
+            try:
+                d["parameters"] = json.loads(d["parameters"])
+            except (TypeError, ValueError):
+                pass
+        return d
+
     def update_attempt_notes(self, attempt_id: int, notes: str) -> None:
         with self._conn() as conn:
             conn.execute(

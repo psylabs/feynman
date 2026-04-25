@@ -46,7 +46,10 @@
     };
     es.onmessage = (e) => {
       try {
-        render(JSON.parse(e.data));
+        const payload = JSON.parse(e.data);
+        render(payload);
+        // Make events available to app.js for live UI updates.
+        window.dispatchEvent(new CustomEvent("feynman:event", { detail: payload }));
       } catch {
         /* ignore */
       }

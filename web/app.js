@@ -4,6 +4,7 @@
 
   let sessionId = null;
   let currentQid = null;
+  let currentAttemptId = null;
   let promptEndTs = null;
   let onsetTs = null;
   let mediaRecorder = null;
@@ -141,6 +142,7 @@
     }
 
     lastResult = r;
+    currentAttemptId = r.attempt_id || null;
 
     let label, cls;
     if (r.skipped) {
@@ -160,14 +162,29 @@
     $("result").textContent = `${label}${detail}${timing}`;
     $("result").className = cls;
     $("status").textContent = `“${r.transcript || ""}”`;
-    $("feedback").textContent = r.feedback || "";
+    $("feedback").textContent = r.feedback_pending ? "thinking…" : "";
     $("btn-next").classList.remove("hidden");
 
     if (advancing) return;
     advancing = true;
-    const delay = r.feedback ? 7000 : 1500;
+    // If feedback is coming, give it a few seconds to land before advancing.
+    // Otherwise advance briskly. User can always click Next.
+    const delay = r.feedback_pending ? 5000 : 2000;
     advanceTimer = setTimeout(advanceNow, delay);
   }
+
+  // Listen for asynchronous feedback events streamed from the server.
+  window.addEventListener("feynman:event", (e) => {
+    const ev = e.detail;
+    if (!ev || ev.type !== "feedback.ready") return;
+    if (!currentAttemptId || ev.attempt_id !== currentAttemptId) return;
+    $("feedback").textContent = ev.text || "";
+    // If we were about to advance, extend the timer so the user can read it.
+    if (advancing && advanceTimer) {
+      clearTimeout(advanceTimer);
+      advanceTimer = setTimeout(advanceNow, 6000);
+    }
+  });
 
   async function advanceNow() {
     if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }

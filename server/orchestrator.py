@@ -104,6 +104,23 @@ class Orchestrator:
             skipped=parsed["skipped"],
         )
 
+        # Treat unparseable non-empty transcripts (e.g. "Stay" from a misheard
+        # number) the same as empty audio: retry, don't pollute mastery.
+        if parsed["value"] is None and not parsed["skipped"]:
+            self.bus.emit(
+                "answer.unparseable",
+                session_id=sid,
+                qid=qid,
+                transcript=text,
+            )
+            return {
+                "audio_failed": True,
+                "message": f"Couldn't parse a number from “{text}” — try again.",
+                "transcript": text,
+                "position": q["position"],
+                "target_questions": self.target_questions,
+            }
+
         if parsed["skipped"]:
             verdict = {"correct": False, "error_magnitude": None, "rule": "skipped"}
         else:
@@ -162,34 +179,17 @@ class Orchestrator:
             self.bus.emit,
         )
 
-        fb_text: str | None = None
-        if feedback.should_give_feedback(
+        wants_feedback = feedback.should_give_feedback(
             verdict["correct"],
             parsed["skipped"],
             resolution_lat,
             skill["target_latency_ms"],
-        ):
-            recent = self.storage.recent_attempts_for_skill(q["skill_id"], limit=10)
-            fb_text = feedback.generate(
-                prompt=q["prompt"],
-                expected=q["expected"],
-                parsed=parsed["value"],
-                correct=verdict["correct"],
-                skipped=parsed["skipped"],
-                latency_ms=resolution_lat,
-                target_ms=skill["target_latency_ms"],
-                skill_id=q["skill_id"],
-                parameters=q["parameters"],
-                recent_attempts=recent,
-                current_attempt_id=attempt_id,
-                emit=self.bus.emit,
-            )
-            if fb_text:
-                self.storage.update_attempt_notes(attempt_id, fb_text)
+        )
 
         del self._active[sid]
 
         return {
+            "attempt_id": attempt_id,
             "correct": verdict["correct"],
             "expected": q["expected"],
             "parsed": parsed["value"],
@@ -198,10 +198,53 @@ class Orchestrator:
             "onset_latency_ms": onset_lat,
             "resolution_latency_ms": resolution_lat,
             "rule": verdict["rule"],
-            "feedback": fb_text,
+            "feedback_pending": wants_feedback,
             "position": q["position"],
             "target_questions": self.target_questions,
         }
+
+    def generate_feedback_for(self, attempt_id: int) -> None:
+        """Background task: produce a coaching sentence for an attempt and
+        emit it on the bus so the frontend can render it via SSE."""
+        attempt = self.storage.get_attempt(attempt_id)
+        if not attempt:
+            return
+        skill = self.storage.get_skill(attempt["skill_id"])
+        if not skill:
+            return
+
+        params = attempt.get("parameters") or {}
+        if isinstance(params, str):
+            try:
+                import json as _json
+
+                params = _json.loads(params)
+            except (TypeError, ValueError):
+                params = {}
+
+        recent = self.storage.recent_attempts_for_skill(attempt["skill_id"], limit=10)
+
+        fb_text = feedback.generate(
+            prompt=attempt["prompt_text"],
+            expected=attempt["expected_answer"],
+            parsed=attempt.get("parsed_answer"),
+            correct=bool(attempt.get("correct")),
+            skipped=bool(attempt.get("skipped")),
+            latency_ms=attempt.get("resolution_latency_ms"),
+            target_ms=skill["target_latency_ms"],
+            skill_id=attempt["skill_id"],
+            parameters=params,
+            recent_attempts=recent,
+            current_attempt_id=attempt_id,
+            emit=self.bus.emit,
+        )
+        if fb_text:
+            self.storage.update_attempt_notes(attempt_id, fb_text)
+            self.bus.emit(
+                "feedback.ready",
+                attempt_id=attempt_id,
+                text=fb_text,
+            )
 
     def end_session(self, sid: str) -> dict:
         self.storage.end_session(sid)

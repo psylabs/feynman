@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -79,6 +79,7 @@ async def session_next(payload: dict):
 
 @app.post("/session/submit")
 async def session_submit(
+    background_tasks: BackgroundTasks,
     session_id: str = Form(...),
     qid: str = Form(...),
     prompt_end_ts: float = Form(...),
@@ -98,7 +99,7 @@ async def session_submit(
         path=str(audio_path),
     )
     try:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             orch.submit_answer,
             session_id,
             qid,
@@ -109,6 +110,16 @@ async def session_submit(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    # If this attempt was recorded and warrants feedback, generate it in the
+    # background so the response returns immediately. Feedback streams to the
+    # browser via the SSE event bus when ready.
+    if result.get("attempt_id") and result.get("feedback_pending"):
+        background_tasks.add_task(
+            asyncio.to_thread, orch.generate_feedback_for, result["attempt_id"]
+        )
+
+    return result
 
 
 @app.post("/session/end")

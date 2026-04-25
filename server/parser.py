@@ -58,6 +58,9 @@ def parse(text: str) -> dict:
     if bare in SHORT_HOMOPHONES:
         return {"value": float(SHORT_HOMOPHONES[bare]), "skipped": False, "raw": raw}
 
+    # Digit-by-digit speech: "1-0-4", "1 0 4" → "104"
+    cleaned = _collapse_digit_by_digit(cleaned)
+
     # Direct numeric form (digits, possibly negative, possibly decimal)
     m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
     direct: float | None = None
@@ -78,6 +81,20 @@ def parse(text: str) -> dict:
 
 
 _TENS_WORDS = {"twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
+_DIGIT_WORDS = {"zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+
+
+def _collapse_digit_by_digit(cleaned: str) -> str:
+    """Turn "1-0-4" or "1 0 4" into "104" so the direct numeric regex catches it.
+
+    Only applies when all numeric chunks are single digits (no multi-digit
+    groups), so "12 34" is left alone.
+    """
+    chunks = re.findall(r"\d+|[a-z]+", cleaned)
+    digit_chunks = [c for c in chunks if c.isdigit()]
+    if len(digit_chunks) >= 2 and all(len(c) == 1 for c in digit_chunks):
+        return "".join(digit_chunks)
+    return cleaned
 
 
 def _add_implicit_hundred(tokens: list[str]) -> list[str]:
@@ -108,6 +125,13 @@ def _from_words(text: str) -> float | None:
     if tokens and tokens[0] in ("negative", "minus"):
         negative = True
         tokens = tokens[1:]
+
+    # Digit-by-digit verbal reading: "one zero four" → 104
+    if len(tokens) >= 2 and all(t in _DIGIT_WORDS for t in tokens):
+        digit_str = "".join(str(WORDS[t]) for t in tokens)
+        if digit_str:
+            value = float(int(digit_str))
+            return -value if negative else value
 
     tokens = _add_implicit_hundred(tokens)
 
