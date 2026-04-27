@@ -392,51 +392,108 @@
     $("profile-user").textContent = `· ${user.name}`;
     $("profile-content").innerHTML = "<p class='muted'>Loading…</p>";
     const data = await fetch(`/profile/${user.id}`).then((r) => r.json());
-    if (!data.skills?.length) {
+
+    const totalAttempts = (data.skills || []).reduce((s, sk) => s + (sk.attempt_count || 0), 0);
+    if (!totalAttempts) {
       $("profile-content").innerHTML = "<p class='muted'>No data yet — take a baseline first.</p>";
       return;
     }
-    $("profile-content").innerHTML = data.skills.map(renderSkillCard).join("");
-  }
 
-  function renderSkillCard(s) {
-    const accPct = s.rolling_accuracy != null ? Math.round(s.rolling_accuracy * 100) + "%" : "—";
-    const med = s.median_latency_ms != null ? s.median_latency_ms + " ms" : "—";
-    const target = s.target_latency_ms ? s.target_latency_ms + " ms" : "—";
-    const lvls = ["1", "2", "3"].map((lvl) => {
-      const d = s.per_level[lvl];
-      if (!d) return `<div class="lvl"><label>L${lvl}</label><span class="muted">no data</span></div>`;
-      const pct = Math.round(d.accuracy * 100);
-      return `<div class="lvl">
-        <label>L${lvl}</label>
-        <span class="${pct >= 85 ? 'good' : pct >= 50 ? 'ok' : 'low'}">${d.correct}/${d.n} · ${pct}%</span>
-        <span class="muted">${d.median_latency_ms != null ? d.median_latency_ms + "ms" : "—"}</span>
-      </div>`;
-    }).join("");
-    const wrong = s.recent_wrong?.length
-      ? `<div class="recent-wrong"><div class="rw-head">Recent missed</div>` +
-        s.recent_wrong.map((w) => `<div class="rw-row">
-          <span class="prompt">${escapeHtml(w.prompt)}</span>
-          <span class="vs"><span class="wrong">${fmt(w.your_answer)}</span> → <span class="correct">${fmt(w.expected)}</span></span>
-          ${w.notes ? `<div class="note">${escapeHtml(w.notes)}</div>` : ""}
-        </div>`).join("") +
-        `</div>`
-      : "";
-    return `<div class="skill-card">
-      <div class="card-head">
-        <div class="name">${escapeHtml(s.display_name)}</div>
-        <div class="spark-wrap" title="Accuracy across recent sessions">${sparkline(s.history, "accuracy", 1)}</div>
-      </div>
-      ${masteryBar(s.mastery)}
-      <div class="numbers">
-        <div><label>Recent acc</label><strong>${accPct}</strong></div>
-        <div><label>Median</label><strong>${med}</strong></div>
-        <div><label>Target</label><strong>${target}</strong></div>
-        <div><label>Attempts</label><strong>${s.attempt_count}</strong></div>
-      </div>
-      <div class="level-grid">${lvls}</div>
-      ${wrong}
-    </div>`;
+    let html = "";
+
+    // --- Next drills (what the scheduler would prioritize) ---
+    if (data.next_drills?.length) {
+      html += `<div class="profile-section">
+        <h3 class="section">Highest-value drills</h3>
+        <p class="muted small">What the scheduler will prioritize next. Gap = how far above target latency.</p>
+        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Median</th><th class="num">Target</th><th class="num">Gap</th><th class="num">Acc</th><th class="num">n</th></tr></thead><tbody>`;
+      for (const d of data.next_drills) {
+        const gapPct = Math.round(d.gap_ratio * 100);
+        html += `<tr>
+          <td><strong>${escapeHtml(d.display)}</strong></td>
+          <td class="muted">${d.skill_id}</td>
+          <td class="num latency-hot">${d.median_latency_ms}ms</td>
+          <td class="num muted">${d.target_ms}ms</td>
+          <td class="num ${gapPct > 100 ? 'val-bad' : gapPct > 50 ? 'val-warn' : 'val-ok'}">+${gapPct}%</td>
+          <td class="num ${d.accuracy < 0.7 ? 'val-bad' : d.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(d.accuracy * 100)}%</td>
+          <td class="num muted">${d.n}</td>
+        </tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+
+    // --- Slowest facts ---
+    if (data.slowest_facts?.length) {
+      html += `<div class="profile-section">
+        <h3 class="section">Slowest facts</h3>
+        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Median</th><th class="num">Acc</th><th class="num">n</th></tr></thead><tbody>`;
+      for (const f of data.slowest_facts) {
+        html += `<tr>
+          <td><strong>${escapeHtml(f.display)}</strong></td>
+          <td class="muted">${f.skill_id}</td>
+          <td class="num latency-hot">${f.median_latency_ms}ms</td>
+          <td class="num ${f.accuracy < 0.7 ? 'val-bad' : f.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(f.accuracy * 100)}%</td>
+          <td class="num muted">${f.n}</td>
+        </tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+
+    // --- Worst accuracy ---
+    if (data.worst_accuracy?.length) {
+      html += `<div class="profile-section">
+        <h3 class="section">Most errors</h3>
+        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Acc</th><th class="num">Median</th><th class="num">n</th></tr></thead><tbody>`;
+      for (const f of data.worst_accuracy) {
+        html += `<tr>
+          <td><strong>${escapeHtml(f.display)}</strong></td>
+          <td class="muted">${f.skill_id}</td>
+          <td class="num val-bad">${Math.round(f.accuracy * 100)}%</td>
+          <td class="num">${f.median_latency_ms != null ? f.median_latency_ms + 'ms' : '—'}</td>
+          <td class="num muted">${f.n}</td>
+        </tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+
+    // --- Regressions ---
+    if (data.regressions?.length) {
+      html += `<div class="profile-section">
+        <h3 class="section">Regressions</h3>
+        <p class="muted small">Facts where recent latency is notably worse than earlier performance.</p>
+        <table><thead><tr><th>Fact</th><th class="num">Was</th><th class="num">Now</th><th class="num">Slower by</th></tr></thead><tbody>`;
+      for (const r of data.regressions) {
+        html += `<tr>
+          <td><strong>${escapeHtml(r.display)}</strong></td>
+          <td class="num">${r.old_median_ms}ms</td>
+          <td class="num latency-hot">${r.recent_median_ms}ms</td>
+          <td class="num val-bad">+${Math.round((r.regression_ratio - 1) * 100)}%</td>
+        </tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+
+    // --- Per-skill summary (compact) ---
+    if (data.skills?.length) {
+      html += `<div class="profile-section">
+        <h3 class="section">By operation</h3>
+        <table><thead><tr><th>Skill</th><th class="num">Acc</th><th class="num">Median</th><th class="num">Target</th><th class="num">n</th></tr></thead><tbody>`;
+      for (const s of data.skills) {
+        const accPct = s.rolling_accuracy != null ? Math.round(s.rolling_accuracy * 100) + "%" : "—";
+        const med = s.median_latency_ms != null ? s.median_latency_ms + "ms" : "—";
+        const target = s.target_latency_ms ? s.target_latency_ms + "ms" : "—";
+        html += `<tr>
+          <td><strong>${escapeHtml(s.display_name)}</strong></td>
+          <td class="num">${accPct}</td>
+          <td class="num">${med}</td>
+          <td class="num muted">${target}</td>
+          <td class="num muted">${s.attempt_count}</td>
+        </tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+
+    $("profile-content").innerHTML = html;
   }
 
   // ---- leaderboard screen ------------------------------------------------

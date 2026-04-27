@@ -381,6 +381,33 @@ class Storage:
                 "UPDATE attempts SET notes = ? WHERE id = ?", (notes, attempt_id)
             )
 
+    # ---- diagnosis queries -------------------------------------------------
+
+    def all_attempts_for_user(
+        self, user_id: str, limit: int = 500
+    ) -> list[dict]:
+        """All non-skipped attempts for a user across all skills, newest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.* FROM attempts a
+                JOIN sessions s ON a.session_id = s.id
+                WHERE s.user_id = ? AND a.skipped = 0
+                ORDER BY a.created_at DESC LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d.get("parameters"):
+                try:
+                    d["parameters"] = json.loads(d["parameters"])
+                except (TypeError, ValueError):
+                    pass
+            out.append(d)
+        return out
+
     # ---- profile / leaderboard rollups ------------------------------------
 
     def session_history_for_skill(

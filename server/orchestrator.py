@@ -4,8 +4,8 @@ Holds no persistent state; pending-question state lives in memory between
 `next_question` and `submit_answer` calls, keyed by session id.
 
 Two session modes:
-  - drill: scheduler picks a skill, generator picks a difficulty matched to
-    the user's current mastery on that skill (5 questions).
+  - drill: diagnosis-first scheduler identifies the user's slowest facts and
+    patterns, then targets those specifically (5 questions).
   - eval: a fixed 20-question plan walks each skill across three difficulty
     levels so we get a real baseline. Bypasses the scheduler.
 """
@@ -99,13 +99,14 @@ class Orchestrator:
             )
             problem = generator.generate(skill_id, level=level)
         else:
-            states = self.storage.get_all_skill_states(user_id)
-            choice = scheduler.pick_skill(states, self.bus.emit)
-            skill_id = choice["skill_id"]
-            level = scheduler.pick_level(
-                self.storage, user_id, skill_id, self.bus.emit
+            pick = scheduler.pick_drill(self.storage, user_id, self.bus.emit)
+            skill_id = pick["skill_id"]
+            level = pick["level"]
+            problem = generator.generate(
+                skill_id,
+                level=level,
+                target=pick.get("target_fact"),
             )
-            problem = generator.generate(skill_id, level=level)
 
         self.bus.emit(
             "generator.produced",

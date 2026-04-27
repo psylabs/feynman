@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 # Load .env (if present) before any module reads OPENAI_API_KEY.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from server import tts  # noqa: E402
+from server import diagnosis, tts  # noqa: E402
 from server.events import EventBus  # noqa: E402
 from server.orchestrator import Orchestrator  # noqa: E402
 from server.storage import Storage  # noqa: E402
@@ -98,10 +98,25 @@ def profile(user_id: str):
     user = storage.get_user(user_id)
     if not user:
         raise HTTPException(404, "user not found")
+
+    attempts = storage.all_attempts_for_user(user_id, limit=500)
+    fact_stats = diagnosis.compute_fact_stats(attempts)
+
+    # Build target latency map
+    skill_targets = {}
+    for sid in storage.all_skill_ids():
+        skill = storage.get_skill(sid)
+        if skill:
+            skill_targets[sid] = skill["target_latency_ms"]
+
     return {
         "user": {"id": user["id"], "name": user["name"]},
         "skills": storage.per_skill_stats(user_id),
         "has_completed_eval": storage.has_completed_eval(user_id),
+        "slowest_facts": diagnosis.slowest_facts(fact_stats, min_attempts=2, limit=15),
+        "worst_accuracy": diagnosis.worst_accuracy_facts(fact_stats, min_attempts=2, limit=10),
+        "regressions": diagnosis.recent_regressions(attempts),
+        "next_drills": diagnosis.drill_priorities(fact_stats, skill_targets, min_attempts=2, limit=10),
     }
 
 

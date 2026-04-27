@@ -205,7 +205,7 @@ h3.section {
 }
 table.matrix th, table.matrix td { padding: 4px 12px; }
 
-/* ---- profile cards ---- */
+/* ---- profile ---- */
 #screen-profile, #screen-leaderboard {
   width: 100%;
   max-width: 960px;
@@ -213,32 +213,23 @@ table.matrix th, table.matrix td { padding: 4px 12px; }
 }
 #screen-profile h2, #screen-leaderboard h2 { margin-bottom: 24px; }
 #profile-content {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: 16px;
-}
-
-.skill-card {
-  background: #14161a;
-  border: 1px solid #25282e;
-  border-radius: 8px;
-  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
 }
-.skill-card .card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.skill-card .name {
-  font-size: 16px;
-  font-weight: 500;
-}
-.spark-wrap { color: #6da9e0; }
-.spark { width: 80px; height: 18px; }
 
+.profile-section {
+  margin-bottom: 28px;
+}
+.profile-section table { margin-top: 4px; }
+.profile-section .muted.small { font-size: 11px; margin: 2px 0 6px 0; }
+
+.latency-hot { color: #e8a040; font-weight: 500; }
+.val-bad { color: #ef4444; }
+.val-warn { color: #d4a64a; }
+.val-ok { color: #888; }
+
+/* ---- shared mastery bar (leaderboard) ---- */
 .mastery-bar {
   position: relative;
   background: #1c1f24;
@@ -261,79 +252,6 @@ table.matrix th, table.matrix td { padding: 4px 12px; }
   font-size: 11px;
   color: #888;
   font-variant-numeric: tabular-nums;
-}
-
-.skill-card .numbers {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  font-size: 12px;
-}
-.skill-card .numbers label {
-  display: block;
-  color: #777;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 2px;
-}
-.skill-card .numbers strong {
-  font-weight: 500;
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-}
-
-.level-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  font-size: 12px;
-}
-.level-grid .lvl {
-  background: #0e1014;
-  border-radius: 4px;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.level-grid .lvl label {
-  font-size: 10px;
-  color: #777;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.level-grid .lvl span.good { color: #22c55e; }
-.level-grid .lvl span.ok { color: #d4a64a; }
-.level-grid .lvl span.low { color: #ef4444; }
-.level-grid .lvl .muted { color: #555; font-size: 11px; }
-
-.recent-wrong {
-  border-top: 1px solid #1f2127;
-  padding-top: 10px;
-}
-.recent-wrong .rw-head {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: #777;
-  margin-bottom: 6px;
-}
-.recent-wrong .rw-row {
-  font-size: 12px;
-  padding: 4px 0;
-  border-bottom: 1px dashed #1f2127;
-}
-.recent-wrong .rw-row:last-child { border-bottom: 0; }
-.recent-wrong .rw-row .prompt { color: #d8d9dc; }
-.recent-wrong .rw-row .vs { color: #888; margin-left: 8px; font-variant-numeric: tabular-nums; }
-.recent-wrong .rw-row .wrong { color: #ef4444; }
-.recent-wrong .rw-row .correct { color: #22c55e; }
-.recent-wrong .rw-row .note {
-  font-size: 11px;
-  color: #c9b86d;
-  font-style: italic;
-  margin-top: 2px;
 }
 
 /* ---- leaderboard ---- */
