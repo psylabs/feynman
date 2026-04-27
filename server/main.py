@@ -93,6 +93,29 @@ def users_create(payload: dict):
     return {"id": u["id"], "name": u["name"], "has_completed_eval": False}
 
 
+@app.get("/profile/{user_id}")
+def profile(user_id: str):
+    user = storage.get_user(user_id)
+    if not user:
+        raise HTTPException(404, "user not found")
+    return {
+        "user": {"id": user["id"], "name": user["name"]},
+        "skills": storage.per_skill_stats(user_id),
+        "has_completed_eval": storage.has_completed_eval(user_id),
+    }
+
+
+@app.get("/leaderboard")
+def leaderboard():
+    return {
+        "users": storage.leaderboard_data(),
+        "skills": [
+            {"id": sid, "display_name": (storage.get_skill(sid) or {}).get("display_name", sid)}
+            for sid in storage.all_skill_ids()
+        ],
+    }
+
+
 @app.post("/session/start")
 def session_start(payload: dict):
     user_id = payload.get("user_id")

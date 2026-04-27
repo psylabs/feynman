@@ -8,6 +8,11 @@
 <body>
   <header id="topbar">
     <div class="brand">Feynman</div>
+    <nav id="navlinks">
+      <button class="navlink active" data-screen="screen-start">Home</button>
+      <button class="navlink" data-screen="screen-profile">Profile</button>
+      <button class="navlink" data-screen="screen-leaderboard">Leaderboard</button>
+    </nav>
     <div id="user-picker">
       <button id="btn-user" class="user-button">Loading…</button>
       <div id="user-menu" class="user-menu hidden"></div>
@@ -47,6 +52,16 @@
         <button id="btn-restart-drill" class="primary">Start drill</button>
         <button id="btn-restart-eval" class="secondary">Re-do baseline</button>
       </div>
+    </section>
+
+    <section id="screen-profile" class="screen hidden">
+      <h2>Profile <span id="profile-user" class="muted"></span></h2>
+      <div id="profile-content"></div>
+    </section>
+
+    <section id="screen-leaderboard" class="screen hidden">
+      <h2>Leaderboard</h2>
+      <div id="leaderboard-content"></div>
     </section>
   </main>
 

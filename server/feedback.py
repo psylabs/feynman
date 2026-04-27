@@ -1,12 +1,18 @@
 """Personalized tutor-style feedback for wrong or slow attempts.
 
 Two-stage:
-  1. Deterministic error analysis — characterize the *shape* of the mistake
-     (off-by-one, missed carry, swapped operands, etc.) from the actual
-     numbers. The LLM is bad at this; we don't trust it to do arithmetic.
-  2. LLM call — given the error tags, the actual numbers, and a compact
-     summary of the user's recent attempts on this skill, produce one short
-     coaching sentence in second person.
+  1. Deterministic `error_facts()` — produces *neutral* observations about
+     the relationship between the user's answer and the correct one. No
+     interpretation, no labels like "missed_carry". Just the arithmetic
+     facts a careful reader could verify.
+  2. LLM call — given those facts, the actual numbers, and a compact
+     summary of the user's recent attempts on this skill, the model does
+     its own interpretation. The system prompt explicitly forbids
+     generic platitudes and asks for analysis grounded in the specific
+     numbers in front of it.
+
+The split exists because LLMs are bad at arithmetic but good at narrative.
+We hand them the math; they hand us the explanation.
 """
 
 import os
@@ -41,80 +47,55 @@ def should_give_feedback(
 
 
 # ---------------------------------------------------------------------------
-# Deterministic error analysis
+# Neutral arithmetic facts about an attempt
 # ---------------------------------------------------------------------------
 
 
-def analyze_error(
-    skill_id: str,
-    parameters: dict | None,
+def error_facts(
     parsed: float | None,
     expected: float,
     correct: bool,
     skipped: bool,
-) -> list[str]:
-    """Return a list of short tag strings describing the shape of the error."""
-    if skipped:
-        return ["skipped"]
-    if parsed is None:
-        return ["no_clear_answer"]
-    if correct:
-        return ["correct"]
+) -> dict:
+    """Return verifiable observations about the answer-vs-correct relationship.
 
-    params = parameters or {}
+    Deliberately label-free. No "missed_carry" or "off_by_one" — those are
+    interpretations and we leave them to the LLM (or a future empirical
+    pattern detector) to derive.
+    """
+    if skipped:
+        return {"status": "skipped"}
+    if parsed is None:
+        return {"status": "no_clear_answer"}
+    if correct:
+        return {"status": "correct"}
+
     diff = parsed - expected
     abs_diff = abs(diff)
-    tags: list[str] = []
+    facts: dict = {
+        "status": "wrong",
+        "your_answer": parsed,
+        "correct_answer": expected,
+        "signed_error": diff,
+        "abs_error": abs_diff,
+    }
 
-    if abs_diff == 1:
-        tags.append("off_by_one")
-    elif abs_diff == 10:
-        tags.append("off_by_ten")
-    elif 0 < abs_diff <= 5:
-        tags.append("close_neighbor")
+    if expected:
+        facts["error_as_fraction_of_correct"] = round(abs_diff / abs(expected), 3)
 
-    a = params.get("a")
-    b = params.get("b")
+    # Digit-level neutral observations (only when both are integer-shaped).
+    try:
+        if float(parsed).is_integer() and float(expected).is_integer():
+            e_str = str(int(abs(expected)))
+            p_str = str(int(abs(parsed)))
+            facts["digit_count_correct"] = len(e_str)
+            facts["digit_count_yours"] = len(p_str)
+            facts["last_digit_match"] = e_str[-1] == p_str[-1]
+            facts["digit_count_off"] = len(p_str) - len(e_str)
+    except (ValueError, TypeError):
+        pass
 
-    if skill_id == "addition" and a is not None and b is not None:
-        if (a % 10) + (b % 10) >= 10:
-            no_carry = ((a // 10) + (b // 10)) * 10 + ((a % 10) + (b % 10) - 10)
-            if parsed == no_carry:
-                tags.append("missed_carry")
-
-    if skill_id == "subtraction" and a is not None and b is not None:
-        if a < b and parsed == b - a:
-            tags.append("subtracted_smaller_from_larger")
-        if (a % 10) < (b % 10):
-            no_borrow = ((a // 10) - (b // 10)) * 10 + abs((a % 10) - (b % 10))
-            if parsed == no_borrow:
-                tags.append("missed_borrow")
-
-    if skill_id == "multiplication" and a is not None and b is not None:
-        if parsed == a + b:
-            tags.append("added_instead_of_multiplied")
-        for da in (-1, 1):
-            if parsed == (a + da) * b:
-                tags.append(f"used_{a + da}_times_{b}")
-        for db in (-1, 1):
-            if parsed == a * (b + db):
-                tags.append(f"used_{a}_times_{b + db}")
-
-    if skill_id == "percent_of":
-        pct = params.get("percentage")
-        base = params.get("base")
-        if pct is not None and base is not None:
-            if parsed == base / 10 and pct != 10:
-                tags.append("computed_10_percent_instead")
-            if parsed == base / 100 and pct != 1:
-                tags.append("computed_1_percent_instead")
-            if pct != 0 and parsed == base * pct / 10:
-                tags.append("decimal_off_by_factor_of_10")
-
-    if not tags:
-        tags.append("other_error")
-
-    return tags
+    return facts
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +107,7 @@ def _summarize_history(attempts: list[dict], current_attempt_id: int | None = No
     if not attempts:
         return "(no prior attempts on this skill)"
 
-    lines = []
+    lines: list[str] = []
     for a in attempts:
         if current_attempt_id is not None and a.get("id") == current_attempt_id:
             continue
@@ -137,9 +118,10 @@ def _summarize_history(attempts: list[dict], current_attempt_id: int | None = No
         elif a.get("correct"):
             verdict = f"right · {lat}ms" if lat else "right"
         else:
-            said = a.get("parsed_answer")
-            exp = a.get("expected_answer")
-            verdict = f"WRONG · said {_fmt(said)}, expected {_fmt(exp)}"
+            verdict = (
+                f"WRONG · said {_fmt(a.get('parsed_answer'))}, "
+                f"expected {_fmt(a.get('expected_answer'))}"
+            )
         lines.append(f"  - {prompt}  →  {verdict}")
         if len(lines) >= 8:
             break
@@ -154,14 +136,19 @@ def _summarize_history(attempts: list[dict], current_attempt_id: int | None = No
 
 _SYSTEM = (
     "You are a sharp, no-fluff mental-math coach speaking to ONE specific user. "
-    "Reply with ONE short sentence (max 22 words) addressed to them as 'you'. "
-    "If they got it wrong, name the SPECIFIC likely mistake using the error tags "
-    "and the actual numbers in front of them — never generic platitudes. "
-    "If they got it right but slow, suggest a concrete decomposition shortcut "
-    "using these exact numbers (e.g. 'round 96 up to 100, add 91, take 4 back'). "
-    "If a clear pattern shows up across their recent attempts, briefly note it. "
-    "Forbidden: greetings, praise, formulas, restating the question, the words "
-    "'simply' or 'just'."
+    "Reply with ONE short sentence (max 22 words), addressed to them as 'you'.\n\n"
+    "You will receive: the question, their answer, the correct answer, neutral "
+    "observations about the numerical relationship between the two, and a small "
+    "summary of their recent attempts on this skill. Do your own interpretation "
+    "from those numbers — don't pull from a fixed list of bug names.\n\n"
+    "Wrong answers: look at THEIR specific number versus the correct one, infer "
+    "what plausibly produced it, and say so concretely. If a clear pattern shows "
+    "up across recent attempts, name it briefly. If you genuinely can't tell what "
+    "went wrong, admit it and offer the strategy you'd use on these numbers.\n\n"
+    "Slow but correct: suggest a concrete decomposition shortcut that uses these "
+    "exact operands (e.g., 'round 96 up to 100, add 91, take 4 back').\n\n"
+    "Forbidden: greetings, praise, formulas in symbolic form, restating the "
+    "question, the words 'simply' or 'just', generic encouragement."
 )
 
 
@@ -184,33 +171,43 @@ def generate(
         emit("feedback.skipped", reason="no_api_key")
         return None
 
-    error_tags = analyze_error(skill_id, parameters, parsed, expected, correct, skipped)
+    facts = error_facts(parsed, expected, correct, skipped)
     history = _summarize_history(recent_attempts, current_attempt_id)
 
-    if skipped:
-        situation = f"You skipped this. The right answer is {_fmt(expected)}."
-    elif not correct and parsed is None:
+    if facts["status"] == "skipped":
+        situation = f"You skipped this. The correct answer is {_fmt(expected)}."
+        ask = "Explain how to compute it on these specific numbers, in one sentence."
+    elif facts["status"] == "no_clear_answer":
         situation = (
-            f"Your answer wasn't parseable. The right answer is {_fmt(expected)}."
+            f"Your answer wasn't parseable. The correct answer is {_fmt(expected)}."
         )
-    elif not correct:
+        ask = "Offer the strategy you'd use on these numbers, in one sentence."
+    elif facts["status"] == "wrong":
         situation = (
-            f"You answered {_fmt(parsed)}; the right answer is {_fmt(expected)} "
-            f"(off by {_fmt(abs((parsed or 0) - expected))})."
+            f"You answered {_fmt(parsed)}; the correct answer is {_fmt(expected)}."
+        )
+        ask = (
+            "Look at the numerical observations and infer what plausibly "
+            "produced their answer; say it specifically in one sentence."
         )
     else:
         situation = (
             f"You got {_fmt(expected)} right but took {latency_ms}ms "
             f"(typical fluent answer is around {target_ms}ms)."
         )
+        ask = (
+            "Suggest a concrete decomposition shortcut for these specific "
+            "operands, in one sentence."
+        )
 
     user_msg = (
         f"Question: {prompt}\n"
-        f"{situation}\n"
-        f"Error tags: {error_tags}\n"
         f"Skill: {skill_id}\n"
-        f"Problem parameters: {parameters or {}}\n\n"
-        f"Recent attempts on this skill (most recent first):\n{history}"
+        f"Problem parameters: {parameters or {}}\n"
+        f"{situation}\n"
+        f"Numerical observations: {facts}\n\n"
+        f"Recent attempts on this skill (most recent first):\n{history}\n\n"
+        f"{ask}"
     )
 
     start = time.time()
@@ -230,7 +227,7 @@ def generate(
             "feedback.generated",
             elapsed_ms=elapsed_ms,
             text=text,
-            error_tags=error_tags,
+            facts=facts,
             tokens=resp.usage.total_tokens if resp.usage else None,
         )
         return text or None

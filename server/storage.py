@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import statistics
 import time
 import uuid
 from pathlib import Path
@@ -379,3 +380,152 @@ class Storage:
             conn.execute(
                 "UPDATE attempts SET notes = ? WHERE id = ?", (notes, attempt_id)
             )
+
+    # ---- profile / leaderboard rollups ------------------------------------
+
+    def session_history_for_skill(
+        self, user_id: str, skill_id: str, limit: int = 10
+    ) -> list[dict]:
+        """Per-session rollup for one (user, skill), oldest-first for sparklines."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.session_id,
+                       s.started_at,
+                       COUNT(*) AS n,
+                       SUM(CASE WHEN a.correct THEN 1 ELSE 0 END) AS correct,
+                       AVG(a.resolution_latency_ms) AS avg_latency
+                FROM attempts a
+                JOIN sessions s ON a.session_id = s.id
+                WHERE s.user_id = ? AND a.skill_id = ? AND a.skipped = 0
+                GROUP BY a.session_id
+                ORDER BY s.started_at DESC
+                LIMIT ?
+                """,
+                (user_id, skill_id, limit),
+            ).fetchall()
+        history = [
+            {
+                "session_id": r["session_id"],
+                "started_at": r["started_at"],
+                "n": r["n"],
+                "correct": r["correct"],
+                "accuracy": (r["correct"] / r["n"]) if r["n"] else None,
+                "avg_latency_ms": int(r["avg_latency"]) if r["avg_latency"] else None,
+            }
+            for r in rows
+        ]
+        return list(reversed(history))
+
+    def per_skill_stats(self, user_id: str) -> list[dict]:
+        """Per-skill rollup for the profile page. One source of truth."""
+        states = {s["skill_id"]: s for s in self.get_all_skill_states(user_id)}
+        out: list[dict] = []
+        for skill_id in self.all_skill_ids():
+            skill = self.get_skill(skill_id)
+            if not skill:
+                continue
+            st = states.get(skill_id, {})
+            attempts = self.recent_attempts_for_skill(user_id, skill_id, limit=50)
+
+            by_level: dict[int, list[dict]] = {1: [], 2: [], 3: []}
+            for a in attempts:
+                if a.get("skipped"):
+                    continue
+                params = a.get("parameters") or {}
+                lvl = params.get("level") if isinstance(params, dict) else None
+                if lvl in (1, 2, 3):
+                    by_level[lvl].append(a)
+
+            per_level: dict[str, dict] = {}
+            for lvl, atts in by_level.items():
+                if not atts:
+                    continue
+                correct = sum(1 for a in atts if a.get("correct"))
+                lats = [
+                    a["resolution_latency_ms"]
+                    for a in atts
+                    if a.get("resolution_latency_ms")
+                ]
+                per_level[str(lvl)] = {
+                    "n": len(atts),
+                    "correct": correct,
+                    "accuracy": round(correct / len(atts), 3),
+                    "median_latency_ms": (
+                        int(statistics.median(lats)) if lats else None
+                    ),
+                }
+
+            recent_wrong = [
+                {
+                    "id": a["id"],
+                    "prompt": a["prompt_text"],
+                    "your_answer": a.get("parsed_answer"),
+                    "expected": a.get("expected_answer"),
+                    "latency_ms": a.get("resolution_latency_ms"),
+                    "notes": a.get("notes"),
+                    "created_at": a.get("created_at"),
+                }
+                for a in attempts
+                if not a.get("correct") and not a.get("skipped")
+            ][:5]
+
+            history = self.session_history_for_skill(user_id, skill_id, limit=10)
+
+            out.append(
+                {
+                    "id": skill_id,
+                    "display_name": skill["display_name"],
+                    "target_latency_ms": skill["target_latency_ms"],
+                    "mastery": st.get("mastery"),
+                    "rolling_accuracy": st.get("rolling_accuracy"),
+                    "median_latency_ms": st.get("median_latency_ms"),
+                    "attempt_count": st.get("attempt_count", 0) or 0,
+                    "last_seen_at": st.get("last_seen_at"),
+                    "per_level": per_level,
+                    "recent_wrong": recent_wrong,
+                    "history": history,
+                }
+            )
+        return out
+
+    def leaderboard_data(self) -> list[dict]:
+        """Cross-user comparison. Per-user totals plus per-skill mastery."""
+        users = self.list_users()
+        out: list[dict] = []
+        skill_ids = self.all_skill_ids()
+        for u in users:
+            states = {
+                s["skill_id"]: s for s in self.get_all_skill_states(u["id"])
+            }
+            per_skill: dict[str, dict] = {}
+            mastery_values: list[float] = []
+            total_attempts = 0
+            for sid in skill_ids:
+                st = states.get(sid, {})
+                m = st.get("mastery")
+                if m is not None:
+                    mastery_values.append(m)
+                total_attempts += int(st.get("attempt_count") or 0)
+                per_skill[sid] = {
+                    "mastery": m,
+                    "rolling_accuracy": st.get("rolling_accuracy"),
+                    "median_latency_ms": st.get("median_latency_ms"),
+                    "attempt_count": int(st.get("attempt_count") or 0),
+                }
+            overall = (
+                round(sum(mastery_values) / len(mastery_values), 3)
+                if mastery_values
+                else None
+            )
+            out.append(
+                {
+                    "id": u["id"],
+                    "name": u["name"],
+                    "overall_mastery": overall,
+                    "total_attempts": total_attempts,
+                    "has_completed_eval": self.has_completed_eval(u["id"]),
+                    "per_skill": per_skill,
+                }
+            )
+        return out

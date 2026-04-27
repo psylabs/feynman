@@ -102,7 +102,10 @@ class Orchestrator:
             states = self.storage.get_all_skill_states(user_id)
             choice = scheduler.pick_skill(states, self.bus.emit)
             skill_id = choice["skill_id"]
-            problem = generator.generate(skill_id, mastery=choice["mastery"])
+            level = scheduler.pick_level(
+                self.storage, user_id, skill_id, self.bus.emit
+            )
+            problem = generator.generate(skill_id, level=level)
 
         self.bus.emit(
             "generator.produced",
