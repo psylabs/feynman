@@ -1,4 +1,4 @@
-"""Text-to-speech via macOS `say` + `afconvert` to WAV (browser-friendly)."""
+"""Text-to-speech via macOS `say` direct to WAV (browser-friendly)."""
 
 import re
 import subprocess
@@ -15,20 +15,13 @@ AUDIO_DIR.mkdir(exist_ok=True)
 def synthesize(text: str, emit: Callable) -> dict:
     fname = f"tts_{uuid.uuid4().hex}.wav"
     wav = AUDIO_DIR / fname
-    aiff = wav.with_suffix(".aiff")
 
     start = time.time()
     subprocess.run(
-        ["say", "-o", str(aiff), text],
+        ["say", "-o", str(wav), "--file-format=WAVE", "--data-format=LEI16@22050", text],
         check=True,
         capture_output=True,
     )
-    subprocess.run(
-        ["afconvert", str(aiff), str(wav), "-d", "LEI16@22050", "-f", "WAVE"],
-        check=True,
-        capture_output=True,
-    )
-    aiff.unlink(missing_ok=True)
     render_ms = int((time.time() - start) * 1000)
 
     duration_ms = _audio_duration_ms(wav)

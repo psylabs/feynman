@@ -58,23 +58,31 @@ def parse(text: str) -> dict:
     if bare in SHORT_HOMOPHONES:
         return {"value": float(SHORT_HOMOPHONES[bare]), "skipped": False, "raw": raw}
 
+    # Strip commas and colons from numbers: "1,078" → "1078", "9:45" → "945"
+    cleaned = re.sub(r"(\d)[,:](\d)", r"\1\2", cleaned)
+
     # Digit-by-digit speech: "1-0-4", "1 0 4" → "104"
-    cleaned = _collapse_digit_by_digit(cleaned)
+    # Must run before direct-number extraction so "1-0-4" isn't grabbed as "1".
+    collapsed = _collapse_digit_by_digit(cleaned)
+    if collapsed != cleaned:
+        # Collapse happened — use the collapsed form
+        m = re.search(r"-?\d+(?:\.\d+)?", collapsed)
+        if m:
+            try:
+                return {"value": float(m.group()), "skipped": False, "raw": raw}
+            except ValueError:
+                pass
 
     # Direct numeric form (digits, possibly negative, possibly decimal)
     m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
-    direct: float | None = None
     if m:
         try:
-            direct = float(m.group())
+            return {"value": float(m.group()), "skipped": False, "raw": raw}
         except ValueError:
-            direct = None
+            pass
 
     # Word-based form
     words_value = _from_words(cleaned)
-
-    if direct is not None:
-        return {"value": direct, "skipped": False, "raw": raw}
     if words_value is not None:
         return {"value": words_value, "skipped": False, "raw": raw}
     return {"value": None, "skipped": False, "raw": raw}
@@ -88,8 +96,12 @@ def _collapse_digit_by_digit(cleaned: str) -> str:
     """Turn "1-0-4" or "1 0 4" into "104" so the direct numeric regex catches it.
 
     Only applies when all numeric chunks are single digits (no multi-digit
-    groups), so "12 34" is left alone.
+    groups), so "12 34" is left alone. Does NOT trigger when a decimal point
+    separates the digits (e.g., "8.5" stays as-is).
     """
+    # If there's a decimal number in the string, don't collapse
+    if re.search(r"\d+\.\d+", cleaned):
+        return cleaned
     chunks = re.findall(r"\d+|[a-z]+", cleaned)
     digit_chunks = [c for c in chunks if c.isdigit()]
     if len(digit_chunks) >= 2 and all(len(c) == 1 for c in digit_chunks):

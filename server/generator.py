@@ -23,19 +23,18 @@ def _gen_addition(level: int, target: dict | None = None) -> dict:
     if target and target.get("a") is not None and target.get("b") is not None:
         a, b = int(target["a"]), int(target["b"])
     elif target and target.get("force_carry"):
-        # Generate a problem that forces a carry
         a, b = _addition_with_carry(level)
     elif target and target.get("pattern"):
         a, b = _addition_from_pattern(target["pattern"], target.get("force_carry", False))
     else:
         if level == 1:
-            a = random.randint(1, 49)
-            b = random.randint(1, 49)
-            if random.random() < 0.7 and (a % 10) + (b % 10) >= 10:
-                b = random.randint(0, 9 - (a % 10)) + (b // 10) * 10
+            # Single-digit and small sums (up to 20)
+            a = random.randint(2, 9)
+            b = random.randint(2, 9)
         elif level == 2:
-            a = random.randint(15, 99)
-            b = random.randint(15, 99)
+            # Two-digit, mix of carry and no-carry
+            a = random.randint(12, 99)
+            b = random.randint(12, 99)
         else:
             a = random.randint(100, 999)
             b = random.randint(100, 999)
@@ -55,7 +54,7 @@ def _addition_with_carry(level: int) -> tuple[int, int]:
     """Generate an addition pair guaranteed to have a ones-digit carry."""
     for _ in range(50):
         if level <= 1:
-            a, b = random.randint(1, 49), random.randint(1, 49)
+            a, b = random.randint(2, 9), random.randint(2, 9)
         elif level == 2:
             a, b = random.randint(15, 99), random.randint(15, 99)
         else:
@@ -101,15 +100,12 @@ def _gen_subtraction(level: int, target: dict | None = None) -> dict:
         a, b = _subtraction_from_hints(level, target)
     else:
         if level == 1:
-            a = random.randint(20, 99)
-            b = random.randint(1, a // 2)
-            if (a % 10) < (b % 10) and random.random() < 0.7:
-                b = (b // 10) * 10 + random.randint(0, a % 10)
-                if b < 1:
-                    b = 1
+            # Single-digit subtraction and teens minus single digit
+            a = random.randint(5, 18)
+            b = random.randint(2, min(9, a - 1))
         elif level == 2:
-            a = random.randint(30, 99)
-            b = random.randint(15, a - 1)
+            a = random.randint(20, 99)
+            b = random.randint(5, a - 1)
         else:
             a = random.randint(100, 999)
             b = random.randint(20, 99)
