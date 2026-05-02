@@ -13,6 +13,7 @@ Two session modes:
 import uuid
 
 from server import (
+    diagnosis,
     eval_plan,
     feedback,
     generator,
@@ -72,10 +73,23 @@ class Orchestrator:
             mode=session["mode"],
             attempt_count=len(attempts),
         )
+
+        # Compute a diagnosis snapshot for the review screen so the user sees
+        # what the system noticed and what the next session will focus on.
+        all_attempts = self.storage.all_attempts_for_user(session["user_id"], limit=300)
+        fact_stats = diagnosis.compute_fact_stats(all_attempts)
+        skill_targets = {}
+        for skid in self.storage.all_skill_ids():
+            sk = self.storage.get_skill(skid)
+            if sk:
+                skill_targets[skid] = sk["target_latency_ms"]
+        diag = diagnosis.diagnosis_summary(fact_stats, skill_targets, all_attempts)
+
         return {
             "session_id": sid,
             "mode": session["mode"],
             "attempts": attempts,
+            "diagnosis": diag,
         }
 
     # ---- per-turn ----------------------------------------------------------

@@ -68,24 +68,173 @@ def _digit_bucket(n) -> int:
     return 3
 
 
+_DIGIT_WORDS = {1: "single-digit", 2: "two-digit", 3: "three-digit"}
+
+
+def _digit_phrase(token: str) -> str:
+    """'2d' -> 'two-digit'."""
+    if token.endswith("d") and token[:-1].isdigit():
+        return _DIGIT_WORDS.get(int(token[:-1]), token)
+    return token
+
+
 def fact_display(key: str) -> str:
-    """Human-readable label for a fact key."""
+    """Plain-English label for a fact key.
+
+    Examples:
+        mul:6x7      -> "6 x 7"
+        add:2d+2d:c  -> "Two-digit + two-digit, with carry"
+        sub:2d-1d:n  -> "Two-digit − single-digit"
+        pct:15       -> "15%"
+    """
     if key.startswith("mul:"):
         parts = key[4:].split("x")
         return f"{parts[0]} x {parts[1]}"
     if key.startswith("add:"):
-        rest = key[4:]  # e.g. "2d+2d:c"
+        rest = key[4:]
         pattern, tag = rest.rsplit(":", 1)
-        suffix = " (carry)" if tag == "c" else ""
-        return f"{pattern}{suffix}"
+        left, right = pattern.split("+", 1)
+        base = f"{_digit_phrase(left).capitalize()} + {_digit_phrase(right)}"
+        return f"{base}, with carry" if tag == "c" else base
     if key.startswith("sub:"):
-        rest = key[4:]  # e.g. "2d-1d:b"
+        rest = key[4:]
         pattern, tag = rest.rsplit(":", 1)
-        suffix = " (borrow)" if tag == "b" else ""
-        return f"{pattern}{suffix}"
+        left, right = pattern.split("-", 1)
+        base = f"{_digit_phrase(left).capitalize()} − {_digit_phrase(right)}"
+        return f"{base}, with borrow" if tag == "b" else base
     if key.startswith("pct:"):
         return f"{key[4:]}%"
     return key
+
+
+def confidence_band(n: int) -> str:
+    """Map attempt count to a claim-strength label.
+
+    <5  -> "low"   (a single fast trial moves the median noticeably)
+    5-14 -> "medium"
+    >=15 -> "high"
+    """
+    if n is None:
+        return "low"
+    if n < 5:
+        return "low"
+    if n < 15:
+        return "medium"
+    return "high"
+
+
+def factor_family_stats(fact_stats: dict[str, dict]) -> list[dict]:
+    """Roll up multiplication facts by factor family (×7 facts, ×8 facts, …).
+
+    A fact like mul:6x7 contributes to BOTH the ×6 and ×7 families. Single-
+    factor facts (like 7×7) contribute once. Returns a list sorted by median
+    latency descending so families that need the most work surface first.
+    """
+    by_factor: dict[int, dict] = {}
+    for key, s in fact_stats.items():
+        if not key.startswith("mul:"):
+            continue
+        try:
+            a_str, b_str = key[4:].split("x")
+            a, b = int(a_str), int(b_str)
+        except (ValueError, IndexError):
+            continue
+        for f in {a, b}:
+            row = by_factor.setdefault(f, {"factor": f, "n": 0, "correct": 0, "lats": []})
+            row["n"] += s["n"]
+            row["correct"] += s["correct"]
+            row["lats"].extend(s.get("latencies") or [])
+
+    out = []
+    for f, row in by_factor.items():
+        lats = row["lats"]
+        med = int(statistics.median(lats)) if lats else None
+        out.append({
+            "factor": f,
+            "display": f"×{f} facts",
+            "n": row["n"],
+            "accuracy": round(row["correct"] / row["n"], 3) if row["n"] else 0,
+            "median_latency_ms": med,
+            "confidence": confidence_band(row["n"]),
+        })
+    out.sort(key=lambda r: r["median_latency_ms"] or 0, reverse=True)
+    return out
+
+
+def diagnosis_summary(
+    fact_stats: dict[str, dict],
+    skill_target_latencies: dict[str, int],
+    attempts: list[dict],
+) -> dict:
+    """Compact teaser shape for the start screen and the review screen.
+
+    Returns:
+        total_attempts: int
+        confidence: "low" | "medium" | "high" — overall claim strength
+        focus: list of up to 3 facts the next drill is most likely to target
+        regression: optional one regression highlight (or None)
+        notable_mastered: optional one fast-and-accurate fact (or None)
+    """
+    priorities = drill_priorities(fact_stats, skill_target_latencies, min_attempts=2, limit=3)
+    regs = recent_regressions(attempts)
+    total = sum(s["n"] for s in fact_stats.values())
+
+    # Overall confidence: how many facts have we seen enough of?
+    high_n_facts = sum(1 for s in fact_stats.values() if s["n"] >= 15)
+    if total < 20 or not priorities:
+        overall = "low"
+    elif high_n_facts < 3:
+        overall = "medium"
+    else:
+        overall = "high"
+
+    focus = []
+    for p in priorities:
+        focus.append({
+            "fact_key": p["fact_key"],
+            "display": p["display"],
+            "skill_id": p["skill_id"],
+            "median_latency_ms": p["median_latency_ms"],
+            "target_ms": p["target_ms"],
+            "accuracy": p["accuracy"],
+            "n": p["n"],
+            "confidence": confidence_band(p["n"]),
+        })
+
+    regression = None
+    if regs:
+        r = regs[0]
+        regression = {
+            "fact_key": r["fact_key"],
+            "display": r["display"],
+            "old_median_ms": r["old_median_ms"],
+            "recent_median_ms": r["recent_median_ms"],
+            "regression_ratio": r["regression_ratio"],
+        }
+
+    # Notable mastered: pick a fact that's accurate and at-or-below target
+    notable = None
+    for key, s in fact_stats.items():
+        target = skill_target_latencies.get(s["skill_id"])
+        if not target or s["median_latency_ms"] is None:
+            continue
+        if s["accuracy"] >= 0.9 and s["median_latency_ms"] <= target and s["n"] >= 5:
+            notable = {
+                "fact_key": key,
+                "display": fact_display(key),
+                "median_latency_ms": s["median_latency_ms"],
+                "target_ms": target,
+                "n": s["n"],
+            }
+            break
+
+    return {
+        "total_attempts": total,
+        "confidence": overall,
+        "focus": focus,
+        "regression": regression,
+        "notable_mastered": notable,
+    }
 
 
 def compute_fact_stats(attempts: list[dict]) -> dict[str, dict]:
@@ -150,6 +299,7 @@ def slowest_facts(
         candidates.append({
             "fact_key": key,
             "display": fact_display(key),
+            "confidence": confidence_band(s["n"]),
             **s,
         })
     candidates.sort(key=lambda x: x["median_latency_ms"], reverse=True)
@@ -171,6 +321,7 @@ def worst_accuracy_facts(
         candidates.append({
             "fact_key": key,
             "display": fact_display(key),
+            "confidence": confidence_band(s["n"]),
             **s,
         })
     candidates.sort(key=lambda x: x["accuracy"])
