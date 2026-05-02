@@ -29,12 +29,22 @@
       <div id="diagnosis-teaser" class="hidden"></div>
       <div class="actions row">
         <button id="btn-start-eval" class="primary">Take baseline (20q)</button>
-        <button id="btn-start-drill" class="secondary">Start drill (5q)</button>
+        <button id="btn-start-drill" class="secondary">Start drill</button>
+        <label class="muted" for="drill-length" style="margin-left:0.5rem;">Length</label>
+        <select id="drill-length">
+          <option value="5">5</option>
+          <option value="8">8</option>
+          <option value="12" selected>12</option>
+          <option value="16">16</option>
+          <option value="20">20</option>
+          <option value="30">30</option>
+        </select>
       </div>
     </section>
 
     <section id="screen-session" class="screen hidden">
       <div class="meta"><span id="position"></span><span id="mode-tag"></span></div>
+      <div id="session-plan" class="session-plan hidden"></div>
       <div id="prompt"></div>
       <button id="btn-ptt" disabled>Press &amp; hold to answer</button>
       <div id="status"></div>

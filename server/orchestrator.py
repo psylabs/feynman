@@ -21,13 +21,16 @@ from server import (
     mastery,
     parser,
     scheduler,
+    session_analysis,
     stt,
     tts,
 )
 from server.events import EventBus
 from server.storage import Storage
 
-DRILL_LENGTH = 5
+DRILL_LENGTH = 12
+DRILL_LENGTH_MIN = 3
+DRILL_LENGTH_MAX = 30
 
 
 class Orchestrator:
@@ -35,10 +38,17 @@ class Orchestrator:
         self.storage = storage
         self.bus = bus
         self._active: dict[str, dict] = {}
+        # Per-session metadata: target length and pre-computed slot plan.
+        self._sessions: dict[str, dict] = {}
 
     # ---- session lifecycle -------------------------------------------------
 
-    def start_session(self, user_id: str, mode: str = "drill") -> dict:
+    def start_session(
+        self,
+        user_id: str,
+        mode: str = "drill",
+        target_questions: int | None = None,
+    ) -> dict:
         if mode not in ("drill", "eval"):
             raise ValueError(f"invalid mode: {mode}")
         if not self.storage.get_user(user_id):
@@ -48,7 +58,27 @@ class Orchestrator:
         self.storage.ensure_skill_states_for_user(user_id)
 
         sid = self.storage.create_session(user_id, mode)
-        target = eval_plan.EVAL_LENGTH if mode == "eval" else DRILL_LENGTH
+        if mode == "eval":
+            target = eval_plan.EVAL_LENGTH
+            plan: list[dict] = []
+        else:
+            if target_questions is None:
+                target = DRILL_LENGTH
+            else:
+                target = max(DRILL_LENGTH_MIN, min(DRILL_LENGTH_MAX, int(target_questions)))
+            plan = scheduler.build_session_plan(self.storage, user_id, target, self.bus.emit)
+
+        plan_summary = (
+            session_analysis.plan_summary(plan)
+            if mode == "drill"
+            else None
+        )
+        self._sessions[sid] = {
+            "target": target,
+            "plan": plan,
+            "original_plan": [slot.copy() for slot in plan],
+            "plan_summary": plan_summary,
+        }
 
         self.bus.emit(
             "session.started",
@@ -56,16 +86,24 @@ class Orchestrator:
             user_id=user_id,
             mode=mode,
             target=target,
+            planned_slots=len(plan),
         )
-        return {"session_id": sid, "mode": mode, "target_questions": target}
+        return {
+            "session_id": sid,
+            "mode": mode,
+            "target_questions": target,
+            "session_plan": plan_summary,
+        }
 
     def end_session(self, sid: str) -> dict:
         session = self.storage.get_session(sid)
         if not session:
             raise ValueError(f"unknown session: {sid}")
 
+        meta = self._sessions.get(sid) or {}
         self.storage.end_session(sid)
         self._active.pop(sid, None)
+        self._sessions.pop(sid, None)
         attempts = self.storage.session_attempts(sid)
         self.bus.emit(
             "session.ended",
@@ -84,12 +122,16 @@ class Orchestrator:
             if sk:
                 skill_targets[skid] = sk["target_latency_ms"]
         diag = diagnosis.diagnosis_summary(fact_stats, skill_targets, all_attempts)
+        analysis = None
+        if session["mode"] == "drill" and meta.get("original_plan"):
+            analysis = session_analysis.review_analysis(meta["original_plan"], attempts)
 
         return {
             "session_id": sid,
             "mode": session["mode"],
             "attempts": attempts,
             "diagnosis": diag,
+            "session_analysis": analysis,
         }
 
     # ---- per-turn ----------------------------------------------------------
@@ -101,7 +143,10 @@ class Orchestrator:
         user_id = session["user_id"]
         mode = session["mode"]
         position = self.storage.session_attempt_count(sid) + 1
-        target = eval_plan.EVAL_LENGTH if mode == "eval" else DRILL_LENGTH
+        meta = self._sessions.get(sid) or {}
+        target = meta.get("target") or (
+            eval_plan.EVAL_LENGTH if mode == "eval" else DRILL_LENGTH
+        )
 
         if mode == "eval":
             skill_id, level = eval_plan.step(position)
@@ -113,7 +158,17 @@ class Orchestrator:
             )
             problem = generator.generate(skill_id, level=level)
         else:
-            pick = scheduler.pick_drill(self.storage, user_id, self.bus.emit)
+            plan = meta.get("plan") or []
+            if plan:
+                pick = plan.pop(0)
+                self.bus.emit(
+                    "scheduler.plan_pick",
+                    fact_key=pick.get("fact_key"),
+                    role=pick.get("role"),
+                    remaining=len(plan),
+                )
+            else:
+                pick = scheduler.pick_drill(self.storage, user_id, self.bus.emit)
             skill_id = pick["skill_id"]
             level = pick["level"]
             problem = generator.generate(
@@ -173,7 +228,8 @@ class Orchestrator:
         if not skill:
             raise ValueError(f"skill not found: {q['skill_id']}")
 
-        target = (
+        meta = self._sessions.get(sid) or {}
+        target = meta.get("target") or (
             eval_plan.EVAL_LENGTH if q["mode"] == "eval" else DRILL_LENGTH
         )
 
@@ -277,12 +333,9 @@ class Orchestrator:
             self.bus.emit,
         )
 
-        wants_feedback = feedback.should_give_feedback(
-            verdict["correct"],
-            parsed["skipped"],
-            resolution_lat,
-            skill["target_latency_ms"],
-        )
+        # Mid-drill coaching is intentionally disabled for now. The feedback
+        # module stays available for a later post-session/stubborn-pattern design.
+        wants_feedback = False
 
         del self._active[sid]
 

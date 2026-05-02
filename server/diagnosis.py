@@ -175,8 +175,12 @@ def diagnosis_summary(
         regression: optional one regression highlight (or None)
         notable_mastered: optional one fast-and-accurate fact (or None)
     """
-    priorities = drill_priorities(fact_stats, skill_target_latencies, min_attempts=2, limit=3)
     regs = recent_regressions(attempts)
+    reg_keys = {r["fact_key"] for r in regs}
+    priorities = drill_priorities(
+        fact_stats, skill_target_latencies, min_attempts=2, limit=3,
+        regression_keys=reg_keys,
+    )
     total = sum(s["n"] for s in fact_stats.values())
 
     # Overall confidence: how many facts have we seen enough of?
@@ -403,13 +407,18 @@ def drill_priorities(
     skill_target_latencies: dict[str, int],
     min_attempts: int = 2,
     limit: int = 10,
+    regression_keys: set[str] | None = None,
 ) -> list[dict]:
     """Rank facts by how much speed gain is available.
 
     Priority = (current_median - target) / target, clipped at 0.
     Higher means more room for improvement. This answers "what should the
     scheduler drill next?"
+
+    Facts in `regression_keys` get a 1.5× boost: a fact that was fast and is
+    now slow is a stronger signal than a fact that was always slow.
     """
+    regression_keys = regression_keys or set()
     candidates = []
     for key, s in fact_stats.items():
         if s["n"] < min_attempts:
@@ -425,6 +434,9 @@ def drill_priorities(
         # Also penalize low accuracy heavily
         acc_penalty = 1.0 + (1.0 - s["accuracy"]) * 2.0
         priority = gap * acc_penalty
+        regressed = key in regression_keys
+        if regressed:
+            priority *= 1.5
         candidates.append({
             "fact_key": key,
             "display": fact_display(key),
@@ -435,6 +447,49 @@ def drill_priorities(
             "accuracy": s["accuracy"],
             "n": s["n"],
             "skill_id": s["skill_id"],
+            "regressed": regressed,
         })
     candidates.sort(key=lambda x: x["priority"], reverse=True)
     return candidates[:limit]
+
+
+def mastered_for_retention(
+    fact_stats: dict[str, dict],
+    skill_target_latencies: dict[str, int],
+    now: float | None = None,
+    n_min: int = 5,
+    accuracy_min: float = 0.9,
+    target_slack: float = 1.1,
+    limit: int = 10,
+) -> list[dict]:
+    """Mastered facts ranked by how long since the user last saw them.
+
+    A fact qualifies as mastered when accuracy ≥ `accuracy_min`, n ≥ `n_min`,
+    and median latency ≤ target × `target_slack`. Result is sorted by recency
+    descending so the most-overdue retention check sorts first.
+    """
+    import time as _time
+    now = now if now is not None else _time.time()
+    out = []
+    for key, s in fact_stats.items():
+        target = skill_target_latencies.get(s["skill_id"])
+        if not target or s["median_latency_ms"] is None:
+            continue
+        if s["n"] < n_min or s["accuracy"] < accuracy_min:
+            continue
+        if s["median_latency_ms"] > target * target_slack:
+            continue
+        last_seen = s.get("last_seen") or 0
+        days_since = (now - last_seen) / 86400 if last_seen else 999.0
+        out.append({
+            "fact_key": key,
+            "display": fact_display(key),
+            "skill_id": s["skill_id"],
+            "median_latency_ms": s["median_latency_ms"],
+            "target_ms": target,
+            "accuracy": s["accuracy"],
+            "n": s["n"],
+            "days_since_seen": round(days_since, 1),
+        })
+    out.sort(key=lambda x: x["days_since_seen"], reverse=True)
+    return out[:limit]

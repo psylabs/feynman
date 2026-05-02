@@ -15,6 +15,7 @@
   let advancing = false;
   let advanceTimer = null;
   let lastResult = null;
+  let currentSessionPlan = null;
 
   // ---- screen switching --------------------------------------------------
 
@@ -93,14 +94,12 @@
       </div>`;
     }
     const focusBits = d.focus.map((f) => {
-      const lat = f.median_latency_ms != null ? `${(f.median_latency_ms/1000).toFixed(1)}s` : "—";
-      const tgt = f.target_ms != null ? `${(f.target_ms/1000).toFixed(1)}s` : "—";
-      return `<li><strong>${escapeHtml(f.display)}</strong> <span class="muted small">— ${lat} (target ${tgt}) · n=${f.n}</span> ${confChip(f.confidence)}</li>`;
+      return `<li><strong>${escapeHtml(f.display)}</strong> <span class="muted small">— ${fmtSec(f.median_latency_ms)} (target ${fmtSec(f.target_ms)}) · n=${f.n}</span> ${confChip(f.confidence)}</li>`;
     }).join("");
     let regBit = "";
     if (d.regression) {
       const r = d.regression;
-      regBit = `<div class="teaser-reg">Regression: <strong>${escapeHtml(r.display)}</strong> went from ${r.old_median_ms}ms to ${r.recent_median_ms}ms.</div>`;
+      regBit = `<div class="teaser-reg">Regression: <strong>${escapeHtml(r.display)}</strong> went from ${fmtSec(r.old_median_ms)} to ${fmtSec(r.recent_median_ms)}.</div>`;
     }
     return `<div class="teaser">
       <div class="teaser-head">Your slowest right now</div>
@@ -108,6 +107,11 @@
       ${regBit}
       <div class="teaser-foot">This drill will focus there. Confidence: ${conf} · ${d.total_attempts} attempts.</div>
     </div>`;
+  }
+
+  function fmtSec(ms) {
+    if (ms == null) return "—";
+    return `${(ms / 1000).toFixed(1)}s`;
   }
 
   function confChip(level) {
@@ -135,17 +139,25 @@
   async function startSession(mode) {
     const user = window.feynmanUser?.getCurrent?.();
     if (!user) return alert("Pick a player first.");
+    const body = { user_id: user.id, mode };
+    if (mode === "drill") {
+      const sel = $("drill-length");
+      const n = sel ? parseInt(sel.value, 10) : NaN;
+      if (Number.isFinite(n)) body.target_questions = n;
+    }
     const r = await fetch("/session/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: user.id, mode }),
+      body: JSON.stringify(body),
     }).then((res) => res.json());
     if (r.detail) return alert(r.detail);
     sessionId = r.session_id;
     currentMode = r.mode;
+    currentSessionPlan = r.session_plan || null;
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
     $("screen-session").classList.remove("hidden");
     $("mode-tag").textContent = currentMode === "eval" ? "Baseline" : "Drill";
+    renderSessionPlan(currentSessionPlan);
     $("result").textContent = "";
     $("result").className = "";
     $("feedback").textContent = "";
@@ -273,7 +285,7 @@
     else if (r.correct) { label = "✓ Correct"; cls = "correct"; }
     else { label = "✗ Wrong"; cls = "wrong"; }
     const detail = r.skipped ? "" : `  ·  you said ${fmt(r.parsed)}, expected ${fmt(r.expected)}`;
-    const timing = r.resolution_latency_ms != null ? `  ·  ${r.resolution_latency_ms}ms` : "";
+    const timing = r.resolution_latency_ms != null ? `  ·  ${fmtSec(r.resolution_latency_ms)}` : "";
     $("result").textContent = `${label}${detail}${timing}`;
     $("result").className = cls;
     $("status").textContent = `“${r.transcript || ""}”`;
@@ -317,6 +329,7 @@
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
     $("screen-review").classList.remove("hidden");
     sessionId = null;
+    currentSessionPlan = null;
     if (window.feynmanUser?.refreshFlags) window.feynmanUser.refreshFlags();
   }
 
@@ -343,6 +356,23 @@
   function masteryBar(m) {
     const pct = m == null ? 0 : Math.round(m * 100);
     return `<div class="mastery-bar"><div class="${masteryClass(m)}" style="width:${pct}%"></div><span>${pct}%</span></div>`;
+  }
+
+  function renderSessionPlan(plan) {
+    const el = $("session-plan");
+    if (!el) return;
+    if (!plan) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    const focus = plan.focus?.length
+      ? plan.focus.map((f) => `<strong>${escapeHtml(f)}</strong>`).join(", ")
+      : escapeHtml(plan.intent || "Exploratory session");
+    el.innerHTML = `<div class="plan-head">Today’s focus</div>
+      <div class="plan-focus">${focus}</div>
+      <div class="plan-sub">${escapeHtml(plan.mix || "")}</div>`;
+    el.classList.remove("hidden");
   }
 
   function sparkline(data, key, max) {
@@ -379,7 +409,7 @@
         <td>${escapeHtml(x.prompt_text)}</td>
         <td>${x.parsed_answer != null ? fmt(x.parsed_answer) : ""}</td>
         <td>${fmt(x.expected_answer)}</td>
-        <td class="num">${x.resolution_latency_ms != null ? x.resolution_latency_ms : ""}</td>
+        <td class="num">${x.resolution_latency_ms != null ? fmtSec(x.resolution_latency_ms) : ""}</td>
         <td><span class="mark ${cls}">${mark}</span></td>
       </tr>`;
     }
@@ -407,21 +437,25 @@
     const median = lats.length ? lats[Math.floor(lats.length / 2)] : null;
 
     const diag = r.diagnosis;
+    const analysis = r.session_analysis;
     let html = "";
 
-    // 1. What I noticed (diagnosis-first; baseline mode skips this since the
+    // 1. What this session was designed to drill.
+    if (!isEval && analysis) html += renderSessionAnalysis(analysis);
+
+    // 2. What I noticed (diagnosis-first; baseline mode skips this since the
     //    diagnosis was just produced from this session)
     if (!isEval && diag) html += renderNoticed(diag);
 
-    // 2. This session at a glance
+    // 3. This session at a glance
     html += `<h3 class="section">This session</h3>
       <div class="summary">
         <div class="stat"><div class="label">Correct</div><div class="value">${correct}/${total}</div></div>
         <div class="stat"><div class="label">Skipped</div><div class="value">${skipped}</div></div>
-        <div class="stat"><div class="label">Median latency</div><div class="value">${median != null ? median + " ms" : "—"}</div></div>
+        <div class="stat"><div class="label">Median latency</div><div class="value">${fmtSec(median)}</div></div>
       </div>`;
 
-    // 3. Baseline matrix (eval only) or attempts table (collapsed by default for drills)
+    // 4. Baseline matrix (eval only) or attempts table (collapsed by default for drills)
     if (isEval) {
       html += renderBaselineMatrix(a);
       html += attemptsTable(a, /*includeLevel*/ true);
@@ -435,6 +469,34 @@
     $("review").innerHTML = html;
   }
 
+  function renderSessionAnalysis(a) {
+    const plan = a.plan || {};
+    const roleStats = a.role_stats || {};
+    const focusRows = a.focus_stats || [];
+    const focus = plan.focus?.length ? plan.focus.map(escapeHtml).join(", ") : "exploratory mix";
+    const roleBits = ["theme", "related", "retention"].map((role) => {
+      const r = roleStats[role];
+      if (!r || !r.total) return "";
+      const label = role === "theme" ? "Focused" : role === "related" ? "Related" : "Retention";
+      return `<div class="stat"><div class="label">${label}</div><div class="value">${r.correct}/${r.total}</div><div class="sub">${fmtSec(r.median_latency_ms)}</div></div>`;
+    }).filter(Boolean).join("");
+    const focusBits = focusRows.slice(0, 3).map((r) =>
+      `<li><strong>${escapeHtml(r.display)}</strong>: ${r.correct}/${r.total} correct · median ${fmtSec(r.median_latency_ms)}</li>`
+    ).join("");
+    const moved = (a.moved || []).slice(0, 2).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+    const weak = (a.still_weak || []).slice(0, 2).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+    return `<div class="analysis">
+      <h3 class="section">What we drilled</h3>
+      <p class="analysis-intent">${escapeHtml(plan.intent || "This session had no fixed plan.")}</p>
+      <p class="muted small">Focus: ${focus}. ${escapeHtml(plan.mix || "")}</p>
+      ${roleBits ? `<div class="summary compact">${roleBits}</div>` : ""}
+      ${focusBits ? `<ul class="analysis-list">${focusBits}</ul>` : ""}
+      ${moved ? `<h3 class="section tight">What moved</h3><ul class="analysis-list">${moved}</ul>` : ""}
+      ${weak ? `<h3 class="section tight">Still weak</h3><ul class="analysis-list">${weak}</ul>` : ""}
+      <p class="next-up">${escapeHtml(a.next_time || "")}</p>
+    </div>`;
+  }
+
   function renderNoticed(d) {
     if (!d) return "";
     const conf = d.confidence || "low";
@@ -446,16 +508,14 @@
     }
     const bullets = [];
     for (const f of d.focus.slice(0, 2)) {
-      const lat = f.median_latency_ms != null ? `${f.median_latency_ms}ms` : "—";
-      const tgt = f.target_ms != null ? `${f.target_ms}ms` : "—";
-      bullets.push(`<li><strong>${escapeHtml(f.display)}</strong> is slow — median ${lat} vs. target ${tgt} over n=${f.n}. ${confChip(f.confidence)}</li>`);
+      bullets.push(`<li><strong>${escapeHtml(f.display)}</strong> is slow — median ${fmtSec(f.median_latency_ms)} vs. target ${fmtSec(f.target_ms)} over n=${f.n}. ${confChip(f.confidence)}</li>`);
     }
     if (d.regression) {
       const r = d.regression;
-      bullets.push(`<li><strong>${escapeHtml(r.display)}</strong> regressed — was ${r.old_median_ms}ms, now ${r.recent_median_ms}ms.</li>`);
+      bullets.push(`<li><strong>${escapeHtml(r.display)}</strong> regressed — was ${fmtSec(r.old_median_ms)}, now ${fmtSec(r.recent_median_ms)}.</li>`);
     } else if (d.notable_mastered) {
       const n = d.notable_mastered;
-      bullets.push(`<li><strong>${escapeHtml(n.display)}</strong> is mastered — ${n.median_latency_ms}ms vs. target ${n.target_ms}ms.</li>`);
+      bullets.push(`<li><strong>${escapeHtml(n.display)}</strong> is mastered — ${fmtSec(n.median_latency_ms)} vs. target ${fmtSec(n.target_ms)}.</li>`);
     }
     const focusList = d.focus.slice(0, 2).map((f) => escapeHtml(f.display)).join(" and ");
     return `<div class="noticed">
@@ -480,10 +540,10 @@
       x.skill === y.skill ? x.level - y.level : x.skill.localeCompare(y.skill)
     );
     let html = `<h3 class="section">Baseline by skill × level</h3>
-      <table class="matrix"><thead><tr><th>Skill</th><th>Level</th><th>Acc</th><th class="num">Median ms</th></tr></thead><tbody>`;
+      <table class="matrix"><thead><tr><th>Skill</th><th>Level</th><th>Acc</th><th class="num">Median</th></tr></thead><tbody>`;
     for (const r of rows) {
       const med = r.lats.length ? r.lats.sort((x, y) => x - y)[Math.floor(r.lats.length / 2)] : null;
-      html += `<tr><td>${r.skill}</td><td>${r.level}</td><td>${r.correct}/${r.total}</td><td class="num">${med ?? ""}</td></tr>`;
+      html += `<tr><td>${r.skill}</td><td>${r.level}</td><td>${r.correct}/${r.total}</td><td class="num">${med != null ? fmtSec(med) : ""}</td></tr>`;
     }
     return html + "</tbody></table>";
   }
@@ -516,8 +576,8 @@
         html += `<tr>
           <td><strong>${escapeHtml(d.display)}</strong></td>
           <td class="muted">${d.skill_id}</td>
-          <td class="num latency-hot">${d.median_latency_ms}ms</td>
-          <td class="num muted">${d.target_ms}ms</td>
+          <td class="num latency-hot">${fmtSec(d.median_latency_ms)}</td>
+          <td class="num muted">${fmtSec(d.target_ms)}</td>
           <td class="num ${gapPct > 100 ? 'val-bad' : gapPct > 50 ? 'val-warn' : 'val-ok'}">+${gapPct}%</td>
           <td class="num ${d.accuracy < 0.7 ? 'val-bad' : d.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(d.accuracy * 100)}%</td>
           <td class="num muted">${d.n}</td>
@@ -534,10 +594,9 @@
         <p class="muted small">A fact like 6×7 contributes to both ×6 and ×7. The bottleneck is usually one or two specific factors.</p>
         <table><thead><tr><th>Family</th><th class="num">Median</th><th class="num">Acc</th><th class="num">n</th><th>Conf.</th></tr></thead><tbody>`;
       for (const f of data.factor_families) {
-        const med = f.median_latency_ms != null ? `${f.median_latency_ms}ms` : "—";
         html += `<tr>
           <td><strong>${escapeHtml(f.display)}</strong></td>
-          <td class="num latency-hot">${med}</td>
+          <td class="num latency-hot">${fmtSec(f.median_latency_ms)}</td>
           <td class="num ${f.accuracy < 0.7 ? 'val-bad' : f.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(f.accuracy * 100)}%</td>
           <td class="num muted">${f.n}</td>
           <td>${confChip(f.confidence)}</td>
@@ -555,7 +614,7 @@
         html += `<tr>
           <td><strong>${escapeHtml(f.display)}</strong></td>
           <td class="muted">${f.skill_id}</td>
-          <td class="num latency-hot">${f.median_latency_ms}ms</td>
+          <td class="num latency-hot">${fmtSec(f.median_latency_ms)}</td>
           <td class="num ${f.accuracy < 0.7 ? 'val-bad' : f.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(f.accuracy * 100)}%</td>
           <td class="num muted">${f.n}</td>
           <td>${confChip(f.confidence || confidenceFor(f.n))}</td>
@@ -574,7 +633,7 @@
           <td><strong>${escapeHtml(f.display)}</strong></td>
           <td class="muted">${f.skill_id}</td>
           <td class="num val-bad">${Math.round(f.accuracy * 100)}%</td>
-          <td class="num">${f.median_latency_ms != null ? f.median_latency_ms + 'ms' : '—'}</td>
+          <td class="num">${fmtSec(f.median_latency_ms)}</td>
           <td class="num muted">${f.n}</td>
           <td>${confChip(f.confidence || confidenceFor(f.n))}</td>
         </tr>`;
@@ -591,8 +650,8 @@
       for (const r of data.regressions) {
         html += `<tr>
           <td><strong>${escapeHtml(r.display)}</strong></td>
-          <td class="num">${r.old_median_ms}ms</td>
-          <td class="num latency-hot">${r.recent_median_ms}ms</td>
+          <td class="num">${fmtSec(r.old_median_ms)}</td>
+          <td class="num latency-hot">${fmtSec(r.recent_median_ms)}</td>
           <td class="num val-bad">+${Math.round((r.regression_ratio - 1) * 100)}%</td>
         </tr>`;
       }
@@ -606,8 +665,8 @@
         <table><thead><tr><th>Skill</th><th class="num">Acc</th><th class="num">Median</th><th class="num">Target</th><th class="num">n</th></tr></thead><tbody>`;
       for (const s of data.skills) {
         const accPct = s.rolling_accuracy != null ? Math.round(s.rolling_accuracy * 100) + "%" : "—";
-        const med = s.median_latency_ms != null ? s.median_latency_ms + "ms" : "—";
-        const target = s.target_latency_ms ? s.target_latency_ms + "ms" : "—";
+        const med = fmtSec(s.median_latency_ms);
+        const target = fmtSec(s.target_latency_ms);
         html += `<tr>
           <td><strong>${escapeHtml(s.display_name)}</strong></td>
           <td class="num">${accPct}</td>
@@ -648,7 +707,7 @@
           const sk = u.per_skill[s.id] || {};
           const m = sk.mastery;
           const pct = m == null ? "—" : Math.round(m * 100) + "%";
-          const lat = sk.median_latency_ms != null ? `<div class='muted small'>${sk.median_latency_ms}ms · n=${sk.attempt_count}</div>` : "";
+          const lat = sk.median_latency_ms != null ? `<div class='muted small'>${fmtSec(sk.median_latency_ms)} · n=${sk.attempt_count}</div>` : "";
           return `<td><span class="${masteryClass(m)} pill">${pct}</span>${lat}</td>`;
         }).join("")}
         <td class="num">${u.total_attempts}</td>

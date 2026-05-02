@@ -151,10 +151,11 @@ def leaderboard():
 def session_start(payload: dict):
     user_id = payload.get("user_id")
     mode = payload.get("mode", "drill")
+    target_questions = payload.get("target_questions")
     if not user_id:
         raise HTTPException(400, "user_id required")
     try:
-        return orch.start_session(user_id, mode)
+        return orch.start_session(user_id, mode, target_questions=target_questions)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
