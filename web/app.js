@@ -47,6 +47,7 @@
   function refreshStartScreen() {
     const user = window.feynmanUser?.getCurrent?.();
     $("greeting").textContent = user ? `Hi, ${user.name}.` : "Hi.";
+    $("diagnosis-teaser").classList.add("hidden");
     if (!user) return;
     if (user.has_completed_eval) {
       $("eval-banner").classList.add("hidden");
@@ -63,6 +64,61 @@
       $("btn-start-drill").classList.remove("primary");
       $("btn-start-drill").classList.add("secondary");
     }
+    loadDiagnosisTeaser(user.id);
+  }
+
+  async function loadDiagnosisTeaser(userId) {
+    const el = $("diagnosis-teaser");
+    try {
+      const d = await fetch(`/diagnosis/${userId}`).then((r) => r.json());
+      el.innerHTML = renderTeaser(d);
+      el.classList.remove("hidden");
+    } catch {
+      el.classList.add("hidden");
+    }
+  }
+
+  function renderTeaser(d) {
+    if (!d || !d.total_attempts) {
+      return `<div class="teaser teaser-cold">
+        <div class="teaser-head">No data yet.</div>
+        <div class="teaser-sub">Take a baseline (or run a drill) and the system will start flagging your slowest facts here.</div>
+      </div>`;
+    }
+    const conf = d.confidence || "low";
+    if (conf === "low" || !d.focus?.length) {
+      return `<div class="teaser teaser-cold">
+        <div class="teaser-head">Diagnosis confidence: low</div>
+        <div class="teaser-sub">Only ${d.total_attempts} attempts so far. Sessions will be exploratory until more data accumulates.</div>
+      </div>`;
+    }
+    const focusBits = d.focus.map((f) => {
+      const lat = f.median_latency_ms != null ? `${(f.median_latency_ms/1000).toFixed(1)}s` : "—";
+      const tgt = f.target_ms != null ? `${(f.target_ms/1000).toFixed(1)}s` : "—";
+      return `<li><strong>${escapeHtml(f.display)}</strong> <span class="muted small">— ${lat} (target ${tgt}) · n=${f.n}</span> ${confChip(f.confidence)}</li>`;
+    }).join("");
+    let regBit = "";
+    if (d.regression) {
+      const r = d.regression;
+      regBit = `<div class="teaser-reg">Regression: <strong>${escapeHtml(r.display)}</strong> went from ${r.old_median_ms}ms to ${r.recent_median_ms}ms.</div>`;
+    }
+    return `<div class="teaser">
+      <div class="teaser-head">Your slowest right now</div>
+      <ul class="teaser-list">${focusBits}</ul>
+      ${regBit}
+      <div class="teaser-foot">This drill will focus there. Confidence: ${conf} · ${d.total_attempts} attempts.</div>
+    </div>`;
+  }
+
+  function confChip(level) {
+    const cls = level === "high" ? "chip-high" : level === "medium" ? "chip-mid" : "chip-low";
+    return `<span class="conf-chip ${cls}">${level}</span>`;
+  }
+
+  function confidenceFor(n) {
+    if (n == null || n < 5) return "low";
+    if (n < 15) return "medium";
+    return "high";
   }
 
   window.addEventListener("feynman:user-changed", () => {
@@ -350,15 +406,63 @@
     const lats = a.map((x) => x.resolution_latency_ms).filter((v) => v != null).sort((x, y) => x - y);
     const median = lats.length ? lats[Math.floor(lats.length / 2)] : null;
 
-    let html = `<div class="summary">
-      <div class="stat"><div class="label">Correct</div><div class="value">${correct}/${total}</div></div>
-      <div class="stat"><div class="label">Skipped</div><div class="value">${skipped}</div></div>
-      <div class="stat"><div class="label">Median latency</div><div class="value">${median != null ? median + " ms" : "—"}</div></div>
-    </div>`;
+    const diag = r.diagnosis;
+    let html = "";
 
-    if (isEval) html += renderBaselineMatrix(a);
-    html += attemptsTable(a, /*includeLevel*/ true);
+    // 1. What I noticed (diagnosis-first; baseline mode skips this since the
+    //    diagnosis was just produced from this session)
+    if (!isEval && diag) html += renderNoticed(diag);
+
+    // 2. This session at a glance
+    html += `<h3 class="section">This session</h3>
+      <div class="summary">
+        <div class="stat"><div class="label">Correct</div><div class="value">${correct}/${total}</div></div>
+        <div class="stat"><div class="label">Skipped</div><div class="value">${skipped}</div></div>
+        <div class="stat"><div class="label">Median latency</div><div class="value">${median != null ? median + " ms" : "—"}</div></div>
+      </div>`;
+
+    // 3. Baseline matrix (eval only) or attempts table (collapsed by default for drills)
+    if (isEval) {
+      html += renderBaselineMatrix(a);
+      html += attemptsTable(a, /*includeLevel*/ true);
+    } else {
+      html += `<details class="review-details">
+        <summary>Attempt-by-attempt details (${total})</summary>
+        ${attemptsTable(a, /*includeLevel*/ true)}
+      </details>`;
+    }
+
     $("review").innerHTML = html;
+  }
+
+  function renderNoticed(d) {
+    if (!d) return "";
+    const conf = d.confidence || "low";
+    if (!d.total_attempts || conf === "low" || !d.focus?.length) {
+      return `<div class="noticed noticed-cold">
+        <h3 class="section">What I noticed</h3>
+        <p class="muted small">Diagnosis confidence is still low — ${d.total_attempts || 0} attempts overall. The system needs more data before it can call out specific weaknesses with confidence.</p>
+      </div>`;
+    }
+    const bullets = [];
+    for (const f of d.focus.slice(0, 2)) {
+      const lat = f.median_latency_ms != null ? `${f.median_latency_ms}ms` : "—";
+      const tgt = f.target_ms != null ? `${f.target_ms}ms` : "—";
+      bullets.push(`<li><strong>${escapeHtml(f.display)}</strong> is slow — median ${lat} vs. target ${tgt} over n=${f.n}. ${confChip(f.confidence)}</li>`);
+    }
+    if (d.regression) {
+      const r = d.regression;
+      bullets.push(`<li><strong>${escapeHtml(r.display)}</strong> regressed — was ${r.old_median_ms}ms, now ${r.recent_median_ms}ms.</li>`);
+    } else if (d.notable_mastered) {
+      const n = d.notable_mastered;
+      bullets.push(`<li><strong>${escapeHtml(n.display)}</strong> is mastered — ${n.median_latency_ms}ms vs. target ${n.target_ms}ms.</li>`);
+    }
+    const focusList = d.focus.slice(0, 2).map((f) => escapeHtml(f.display)).join(" and ");
+    return `<div class="noticed">
+      <h3 class="section">What I noticed</h3>
+      <ul class="noticed-list">${bullets.join("")}</ul>
+      <p class="next-up">Next session will focus on <strong>${focusList}</strong>.</p>
+    </div>`;
   }
 
   function renderBaselineMatrix(attempts) {
@@ -406,7 +510,7 @@
       html += `<div class="profile-section">
         <h3 class="section">Highest-value drills</h3>
         <p class="muted small">What the scheduler will prioritize next. Gap = how far above target latency.</p>
-        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Median</th><th class="num">Target</th><th class="num">Gap</th><th class="num">Acc</th><th class="num">n</th></tr></thead><tbody>`;
+        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Median</th><th class="num">Target</th><th class="num">Gap</th><th class="num">Acc</th><th class="num">n</th><th>Conf.</th></tr></thead><tbody>`;
       for (const d of data.next_drills) {
         const gapPct = Math.round(d.gap_ratio * 100);
         html += `<tr>
@@ -417,6 +521,26 @@
           <td class="num ${gapPct > 100 ? 'val-bad' : gapPct > 50 ? 'val-warn' : 'val-ok'}">+${gapPct}%</td>
           <td class="num ${d.accuracy < 0.7 ? 'val-bad' : d.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(d.accuracy * 100)}%</td>
           <td class="num muted">${d.n}</td>
+          <td>${confChip(confidenceFor(d.n))}</td>
+        </tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+
+    // --- Multiplication factor families (×7 facts overall, etc.) ---
+    if (data.factor_families?.length) {
+      html += `<div class="profile-section">
+        <h3 class="section">Multiplication, by factor</h3>
+        <p class="muted small">A fact like 6×7 contributes to both ×6 and ×7. The bottleneck is usually one or two specific factors.</p>
+        <table><thead><tr><th>Family</th><th class="num">Median</th><th class="num">Acc</th><th class="num">n</th><th>Conf.</th></tr></thead><tbody>`;
+      for (const f of data.factor_families) {
+        const med = f.median_latency_ms != null ? `${f.median_latency_ms}ms` : "—";
+        html += `<tr>
+          <td><strong>${escapeHtml(f.display)}</strong></td>
+          <td class="num latency-hot">${med}</td>
+          <td class="num ${f.accuracy < 0.7 ? 'val-bad' : f.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(f.accuracy * 100)}%</td>
+          <td class="num muted">${f.n}</td>
+          <td>${confChip(f.confidence)}</td>
         </tr>`;
       }
       html += "</tbody></table></div>";
@@ -426,7 +550,7 @@
     if (data.slowest_facts?.length) {
       html += `<div class="profile-section">
         <h3 class="section">Slowest facts</h3>
-        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Median</th><th class="num">Acc</th><th class="num">n</th></tr></thead><tbody>`;
+        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Median</th><th class="num">Acc</th><th class="num">n</th><th>Conf.</th></tr></thead><tbody>`;
       for (const f of data.slowest_facts) {
         html += `<tr>
           <td><strong>${escapeHtml(f.display)}</strong></td>
@@ -434,6 +558,7 @@
           <td class="num latency-hot">${f.median_latency_ms}ms</td>
           <td class="num ${f.accuracy < 0.7 ? 'val-bad' : f.accuracy < 0.9 ? 'val-warn' : ''}">${Math.round(f.accuracy * 100)}%</td>
           <td class="num muted">${f.n}</td>
+          <td>${confChip(f.confidence || confidenceFor(f.n))}</td>
         </tr>`;
       }
       html += "</tbody></table></div>";
@@ -443,7 +568,7 @@
     if (data.worst_accuracy?.length) {
       html += `<div class="profile-section">
         <h3 class="section">Most errors</h3>
-        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Acc</th><th class="num">Median</th><th class="num">n</th></tr></thead><tbody>`;
+        <table><thead><tr><th>Fact</th><th>Skill</th><th class="num">Acc</th><th class="num">Median</th><th class="num">n</th><th>Conf.</th></tr></thead><tbody>`;
       for (const f of data.worst_accuracy) {
         html += `<tr>
           <td><strong>${escapeHtml(f.display)}</strong></td>
@@ -451,6 +576,7 @@
           <td class="num val-bad">${Math.round(f.accuracy * 100)}%</td>
           <td class="num">${f.median_latency_ms != null ? f.median_latency_ms + 'ms' : '—'}</td>
           <td class="num muted">${f.n}</td>
+          <td>${confChip(f.confidence || confidenceFor(f.n))}</td>
         </tr>`;
       }
       html += "</tbody></table></div>";

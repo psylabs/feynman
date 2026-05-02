@@ -117,7 +117,23 @@ def profile(user_id: str):
         "worst_accuracy": diagnosis.worst_accuracy_facts(fact_stats, min_attempts=2, limit=10),
         "regressions": diagnosis.recent_regressions(attempts),
         "next_drills": diagnosis.drill_priorities(fact_stats, skill_targets, min_attempts=2, limit=10),
+        "factor_families": diagnosis.factor_family_stats(fact_stats),
     }
+
+
+@app.get("/diagnosis/{user_id}")
+def diagnosis_preview(user_id: str):
+    """Compact diagnosis used by the start-screen teaser."""
+    if not storage.get_user(user_id):
+        raise HTTPException(404, "user not found")
+    attempts = storage.all_attempts_for_user(user_id, limit=300)
+    fact_stats = diagnosis.compute_fact_stats(attempts)
+    skill_targets = {}
+    for sid in storage.all_skill_ids():
+        skill = storage.get_skill(sid)
+        if skill:
+            skill_targets[sid] = skill["target_latency_ms"]
+    return diagnosis.diagnosis_summary(fact_stats, skill_targets, attempts)
 
 
 @app.get("/leaderboard")

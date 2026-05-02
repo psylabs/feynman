@@ -229,6 +229,88 @@ table.matrix th, table.matrix td { padding: 4px 12px; }
 .val-warn { color: #d4a64a; }
 .val-ok { color: #888; }
 
+/* ---- diagnosis teaser (start screen) ---- */
+.teaser {
+  background: #14161a;
+  border: 1px solid #25282e;
+  border-left: 3px solid #6da9e0;
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin: 16px 0 20px 0;
+}
+.teaser-cold { border-left-color: #555; }
+.teaser-head {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  margin-bottom: 8px;
+}
+.teaser-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px 0;
+}
+.teaser-list li {
+  font-size: 14px;
+  padding: 4px 0;
+  color: #d8d9dc;
+}
+.teaser-sub { font-size: 13px; color: #b0b1b4; }
+.teaser-reg { font-size: 13px; color: #d4a64a; margin-top: 6px; }
+.teaser-foot { font-size: 11px; color: #777; margin-top: 8px; }
+
+/* ---- review: "what I noticed" ---- */
+.noticed {
+  background: #14161a;
+  border-left: 3px solid #22c55e;
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin: 0 0 24px 0;
+}
+.noticed-cold { border-left-color: #555; }
+.noticed-list {
+  list-style: disc;
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.noticed-list li {
+  font-size: 14px;
+  padding: 3px 0;
+}
+.next-up {
+  font-size: 13px;
+  color: #b0b1b4;
+  margin: 8px 0 0 0;
+}
+.review-details {
+  margin-top: 20px;
+}
+.review-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  padding: 4px 0;
+}
+.review-details summary:hover { color: #d8d9dc; }
+
+/* ---- confidence chips ---- */
+.conf-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+.conf-chip.chip-low { background: #2a2326; color: #ef8a8a; }
+.conf-chip.chip-mid { background: #2a2620; color: #d4a64a; }
+.conf-chip.chip-high { background: #1c2a22; color: #6dd197; }
+
 /* ---- shared mastery bar (leaderboard) ---- */
 .mastery-bar {
   position: relative;
