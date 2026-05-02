@@ -109,9 +109,11 @@ Each session reserves 1–2 slots for facts the user has mastered (accuracy ≥ 
 
 ---
 
-### Phase C — Ground in real life: Calendar first
+### Phase C — Ground in real life: authentic sources first
 
-**Why third:** The MVP plan calls this the moat. The gCal integration is the user's chosen starting point and the cheapest of the grounding sources to operationalize (read-only, OAuth is well-trodden, the data is structured).
+**Why third:** The MVP plan calls this the moat. But grounding only works if the context is authentic. A generic arithmetic fact wrapped in fake personal framing is worse than an abstract drill because it feels manipulative. Grounded problems should come from real user data and should exercise arithmetic that naturally belongs to that source: calendar produces time arithmetic; expenses produce tips, tax, discounts, totals, category sums, budget deltas, and splits.
+
+Calendar is still a strong first adapter because it is read-only, structured, and useful for time arithmetic. It should no longer be treated as the only near-term grounding path. A small expense ingestion path may be equally valuable if the user can provide data cheaply.
 
 **C1. New skill: time arithmetic.**
 Distinct from the existing four skills. New fact-key family: `time:duration`, `time:until`, `time:overlap`, `time:tz-shift`. New parameter schema (start, end, hours, minutes). New tolerance (probably "exact minutes" with `±1m` tolerance for spoken answers). This is a real piece of work — not a generator tweak — and goes through the same `skills.yaml` registration path as the others.
@@ -128,7 +130,27 @@ A `server/grounding/calendar.py` module:
 
 The user must be able to disconnect at any time. When disconnected, time arithmetic falls back to synthetic problems generated from random clock times — still a valid skill, just not personal.
 
-**C3. Time-arithmetic generators.**
+**C3. Expense adapter: user-supplied first, direct integrations later.**
+Do not block grounding on a bank integration. Start with the lowest-friction private path:
+
+- User drops in CSV exports from Chase Sapphire, Simplifi, or another finance tool.
+- Optional manual seed file for recurring numbers: rent, subscriptions, commute time, usual meal costs, hourly rate, savings targets.
+- Parser normalizes date, merchant, amount, category, currency, and source into a local cache.
+- Raw merchant names are local-only; prompts can use merchant/category labels only when the user opts in.
+
+Direct integrations can follow once the source is clear and the value is proven. The first implementation should not assume Chase, Simplifi, Plaid, or any other provider has the right API shape or permission model. CSV/manual import is enough to prove whether expense-grounded drills feel materially better.
+
+Expense-grounded skills should be source-native, not contrived. Examples:
+
+| Generator | Example | Inputs |
+|---|---|---|
+| `tip_total` | "Dinner was $63.42. What's an 18% tip, rounded to the nearest dollar?" | transaction amount, tip percent |
+| `tax_total` | "A $48.00 item has 8.875% tax. Roughly what's the tax?" | amount, local tax rate |
+| `category_sum` | "You spent $18, $27, and $34 on coffee this week. About how much total?" | grouped transactions |
+| `split_cost` | "A $72 meal split 3 ways. About how much each?" | transaction amount, party size |
+| `budget_delta` | "Your dining budget is $400. You've spent $265. How much is left?" | user seed or category budget |
+
+**C4. Time-arithmetic generators.**
 
 | Generator | Example | Inputs from calendar |
 |---|---|---|
@@ -138,12 +160,24 @@ The user must be able to disconnect at any time. When disconnected, time arithme
 | `leave_by` | "It's a 25-minute drive. Your *Dentist* is at 4:00. When do you need to leave?" | event start; user-supplied travel-time |
 | `overlap_check` | "Your *1:1* is 2:00–2:30. Your *Planning* is 2:15–3:00. How many minutes overlap?" | two events |
 
-**Synthesis vs. lit:** none of the cited research speaks to "naturalistic time arithmetic." This is design judgment, not science. The honest framing: we expect grounded problems to be more memorable and motivating, *not* automatically better for fluency transfer. We measure that in Phase F.
+**C5. No contrived personalization.**
+The grounding layer must not take an arbitrary weak fact and invent a personal wrapper around it. For example, if `7×8` is slow, do not manufacture a fake "7 focus blocks of 8 minutes" prompt unless those numbers genuinely came from the user's data and the scenario is something the user would actually reason about. The generator should prefer plain abstract drills over fake relevance.
 
-**C4. Privacy-conscious display.**
-Problems show event titles by default but allow a one-click "drill without titles" toggle in case the user is screen-sharing. Titles never leave the local machine. The LLM coaching ([server/feedback.py](server/feedback.py)) currently sends the prompt text to OpenAI; this needs explicit handling — either redact titles before sending or default-off coaching for grounded problems.
+Grounded prompts must pass a source-native test:
 
-**Success sign:** A drill session contains at least one problem the user instantly recognizes as drawn from their week, and the privacy boundary is clear enough that they're not anxious about the integration.
+- The numbers came from a real source or an explicit user seed.
+- The operation is one the source naturally asks for.
+- The prompt would still make sense if spoken outside the app.
+- The app records which source produced the problem and whether the context was real, synthetic fallback, or user-seeded.
+
+**Synthesis vs. lit:** none of the cited research speaks to "naturalistic time or expense arithmetic." This is design judgment, not science. The honest framing: we expect grounded problems to be more memorable and motivating, *not* automatically better for fluency transfer. We measure that in Phase F.
+
+**C6. Privacy-conscious display.**
+Problems show event titles, merchant names, or category labels only when the user opts in. The user can drill with redacted labels ("Meeting", "Restaurant", "Grocery") when screen-sharing or when the data is sensitive. Raw context stays local.
+
+Skip mid-drill LLM feedback for now. The current LLM coaching path ([server/feedback.py](server/feedback.py)) can make the app feel like it is narrating instead of training, and grounded prompts would raise privacy questions if sent to an external model. Revisit LLM feedback later as a post-session or stubborn-pattern feature with explicit redaction and clear trigger rules.
+
+**Success sign:** A drill session contains at least one problem the user instantly recognizes as drawn from their real week or finances, the prompt does not feel fabricated, and the privacy boundary is clear enough that they're not anxious about the integration.
 
 ---
 
@@ -228,8 +262,8 @@ To keep scope honest:
 
 - **No mobile.** [personal-cognitive-trainer-plan.md](docs/personal-cognitive-trainer-plan.md) defers it; Phase 0 is Mac-only. The debug panel collapse (todo #23) is a 30-minute fix and can land any time, but it's a UX nicety, not a phase.
 - **No multi-device sync.** SQLite stays local. The data-export piece (todo #25) is a single endpoint when needed; do not pre-build sync.
-- **No finance grounding (receipts/orders/tax).** Listed in [personal-cognitive-trainer-plan.md §6](docs/personal-cognitive-trainer-plan.md). Comes after calendar proves the grounding pattern works. Don't open two integrations at once.
-- **No general-purpose tutoring.** The LLM is only used for short scaffolds on stubborn facts (todo #16). Conversational AI is explicitly out of scope per the MVP doc.
+- **No bank-first integration.** Expense grounding may start soon, but through CSV/manual import first. Direct Chase/Simplifi/Plaid-style integration comes only after source-native expense drills prove useful.
+- **No mid-drill LLM coaching.** Conversational AI is explicitly out of scope per the MVP doc. Any future feedback work should be post-session or stubborn-pattern only, and should have explicit privacy/redaction rules.
 - **No Bayesian Knowledge Tracing or full SRS.** The research doc names BKT explicitly as a model the system *does not* import wholesale. Phase E uses Leitner because it's simpler, easier to explain, and adequate for the data volumes a single user will produce.
 - **No new cognitive domains** (people-memory, navigation, episodic recall). Phase 4 in the MVP plan; not now.
 
@@ -245,7 +279,8 @@ These are the places the plan punts honestly rather than guessing:
 | Is the 2-3-2 theme/related/retention mix right? | Inspection-only design choice. | Compare same-session-as-prior-day retention rates across mixes. Probably needs A/B and we're n=1. |
 | Is `mul:7x8` distinct enough from `mul:8x7` to bother? | The diagnosis engine treats them as one (sorted). Some research suggests order-of-presentation matters for retrieval. | Look at within-key latency variance after presentation order is logged. Currently not logged. |
 | Should the regression weight be 1.5×, 2×, or scaled by ratio? | Pulled from intuition. | Run with 1.5× for two weeks, see how often regressions then dominate the priority list. Adjust. |
-| Does naturalistic grounding (calendar problems) actually transfer to abstract fluency? | The research doc is explicit: not addressed by the cited literature. | Compare median latency on equivalent abstract problems before vs. after a month of grounded drilling. n=1 limits causal claims; track the data anyway. |
+| Does naturalistic grounding (calendar or expense problems) actually transfer to abstract fluency? | The research doc is explicit: not addressed by the cited literature. | Compare median latency on equivalent abstract problems before vs. after a month of grounded drilling. n=1 limits causal claims; track the data anyway. |
+| Which expense source is worth supporting first? | Chase Sapphire and Simplifi may be useful, but provider APIs/exports/permissions need verification before implementation. | Start with CSV/manual import. If usage sticks, evaluate the most reliable direct connector. |
 | What's the right CV threshold (D2) for splitting a bucket? | 0.6 is a guess. | Plot CV histograms across all current buckets; pick the threshold that's an obvious gap. |
 | What's the floor for tightened personal targets (D1)? | "Literature floor" is fuzzy — single studies report different values. | Pick a conservative floor (1.0s for single-digit, 3.0s for 2d+2d-no-carry, 4.5s for 2d+2d-carry) and revisit when 1000+ attempts exist. |
 
@@ -259,7 +294,7 @@ When the system lacks data for any of these, the corresponding UI surfaces shoul
 |---|---|---|---|
 | **A** | Diagnosis becomes visible (teaser, review, profile coherence, confidence chips) | High, immediate | None |
 | **B** | Sessions feel coherent (clustering, length 12, retention slots, regression weight) | High | A (so the user can verify) |
-| **C** | Calendar grounding + time arithmetic skill | Medium-high; this is the "stickiness" wedge | None technically, but A+B make the new skill assessable |
+| **C** | Authentic grounding: calendar time math plus CSV/manual expense grounding | Medium-high; this is the "stickiness" wedge | None technically, but A+B make the new skills assessable |
 | **D** | Adaptive targets, bucket splitting, mul mid-tier | Medium; long tail of trust | A's confidence chips; one month of A+B+C data |
 | **E** | Retention queue and decay detection | Compounds over months | D's adaptive targets define mastery |
 | **F** | Data hygiene (quarantine, STT recovery, sanity filter) | Defensive; ongoing | Land F1 alongside A. The rest is concurrent. |

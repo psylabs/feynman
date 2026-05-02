@@ -28,7 +28,7 @@ Now let me go through everything carefully. Your core complaint right now is: **
 
 9. **Start screen should show a one-line diagnosis teaser.** Before starting a drill: "Your slowest: 7×8 (8200ms), 2d+2d carry (6100ms). This session will focus on those." Sets expectations, shows the system is thinking.
 
-10. **Auto-advance timing after feedback.** Currently 2s auto-advance (5s if feedback pending). This may be too fast to read the feedback, or too slow when the answer was instant and correct. Consider: fast correct → 1s, wrong → hold until user clicks Next, feedback → hold until user clicks Next.
+10. **Skip mid-drill LLM feedback for now.** The current feedback path can make the drill feel narrated and generic. Remove it from the near-term drill loop. Future work can revisit post-session or stubborn-pattern feedback only, with explicit trigger rules and privacy/redaction handling.
 
 11. **The "Hold to answer" instruction should shorten or disappear once the user knows the flow.** After the first session, it's just noise.
 
@@ -42,7 +42,7 @@ Now let me go through everything carefully. Your core complaint right now is: **
 
 15. **Percent drills need more variety.** The percentage pool is small (10, 15, 18, 20, 25, 50). Real-life tipping and tax uses 7%, 8%, 8.875% (NYC sales tax), etc. The base pool is also small.
 
-16. **Strategy scaffolds for stubborn facts.** You asked for "brief rescue scaffolds for stubborn facts." The feedback system currently generates LLM coaching, but it fires on every wrong/slow answer. It should instead fire only when a fact has been slow/wrong repeatedly, and it should give a specific strategy ("for 7×8: 7×7=49, add 7"), not a generic "you may have miscalculated."
+16. **Future feedback design: if/how to improve coaching.** Park this until the drill loop feels diagnostic and grounded. If revisited, feedback should be post-session or triggered only by repeated evidence on a stubborn fact/pattern; it should not fire mid-drill on every wrong or slow answer.
 
 ### Tier 5 — Data pipeline and adaptation
 
@@ -56,16 +56,18 @@ Now let me go through everything carefully. Your core complaint right now is: **
 
 20. **Pull from calendar for time-math problems.** "Your meeting is at 2:15, it's 1:47, how many minutes until it starts?" This was in the original plan as the "grounding layer."
 
-21. **Pull from finance for tip/tax/budget problems.** "$63.42 bill, 18% tip" instead of abstract "what is 18% of 63?" This makes the practice sticky and motivating.
+21. **Add CSV/manual expense grounding before direct finance integrations.** Let the user provide Chase Sapphire, Simplifi, or other finance exports as local CSV files; also support a small manually maintained recurring-numbers file for rent, subscriptions, commute time, usual meal costs, budgets, and savings targets. Do not assume a direct bank/plugin integration until CSV/manual grounding proves useful.
 
-22. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion — these are distinct from the current four skills and need their own generators, tolerances, and fact keys.
+22. **Expense-grounded generators should be source-native.** Use real transaction/category/budget data for tip, tax, discount, split, total, and budget-delta drills. Do not wrap arbitrary weak facts in fake personal scenarios; plain abstract drills are better than contrived relevance.
+
+23. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion — these are distinct from the current four skills and need their own generators, tolerances, and fact keys.
 
 ### Tier 7 — Infrastructure
 
-23. **Debug panel takes up half the screen.** It was useful during development but now it's permanent real estate. Make it collapsible or hidden by default.
+24. **Debug panel takes up half the screen.** It was useful during development but now it's permanent real estate. Make it collapsible or hidden by default.
 
-24. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane. If this ever runs on a phone (e.g., while commuting), the layout needs to be responsive.
+25. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane. If this ever runs on a phone (e.g., while commuting), the layout needs to be responsive.
 
-25. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
+26. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
 
-26. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If the user wants to practice from multiple machines, the data doesn't follow.
+27. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If the user wants to practice from multiple machines, the data doesn't follow.
