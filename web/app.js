@@ -473,6 +473,8 @@
     const plan = a.plan || {};
     const roleStats = a.role_stats || {};
     const focusRows = a.focus_stats || [];
+    const gaps = a.fluency_gaps || [];
+    const slowestCorrect = a.slowest_correct || [];
     const focus = plan.focus?.length ? plan.focus.map(escapeHtml).join(", ") : "exploratory mix";
     const roleBits = ["theme", "related", "retention"].map((role) => {
       const r = roleStats[role];
@@ -481,8 +483,17 @@
       return `<div class="stat"><div class="label">${label}</div><div class="value">${r.correct}/${r.total}</div><div class="sub">${fmtSec(r.median_latency_ms)}</div></div>`;
     }).filter(Boolean).join("");
     const focusBits = focusRows.slice(0, 3).map((r) =>
-      `<li><strong>${escapeHtml(r.display)}</strong>: ${r.correct}/${r.total} correct · median ${fmtSec(r.median_latency_ms)}</li>`
+      `<li><strong>${escapeHtml(r.display)}</strong>: ${r.correct}/${r.total} correct · correct median ${fmtSec(r.median_correct_latency_ms || r.median_latency_ms)}${r.target_ms ? ` vs target ${fmtSec(r.target_ms)}` : ""}</li>`
     ).join("");
+    const gapBits = gaps.slice(0, 3).map((r) => {
+      const prior = r.baseline_median_latency_ms ? ` Prior median: ${fmtSec(r.baseline_median_latency_ms)}${r.baseline_n ? ` over n=${r.baseline_n}` : ""}.` : "";
+      const why = r.interpretation ? ` This looks like ${escapeHtml(r.interpretation)}.` : "";
+      return `<li><strong>${escapeHtml(r.display)}</strong> was correct but not fluent: median ${fmtSec(r.median_correct_latency_ms)} vs target ${fmtSec(r.target_ms)}.${prior}${why}</li>`;
+    }).join("");
+    const slowBits = slowestCorrect.slice(0, 3).map((r) => {
+      const gap = r.gap_ms != null && r.gap_ms > 0 ? ` · ${fmtSec(r.gap_ms)} over target` : "";
+      return `<li><strong>${escapeHtml(r.display)}</strong>: ${fmtSec(r.latency_ms)}${gap}</li>`;
+    }).join("");
     const moved = (a.moved || []).slice(0, 2).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
     const weak = (a.still_weak || []).slice(0, 2).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
     return `<div class="analysis">
@@ -491,6 +502,8 @@
       <p class="muted small">Focus: ${focus}. ${escapeHtml(plan.mix || "")}</p>
       ${roleBits ? `<div class="summary compact">${roleBits}</div>` : ""}
       ${focusBits ? `<ul class="analysis-list">${focusBits}</ul>` : ""}
+      ${gapBits ? `<h3 class="section tight">Correct but slow</h3><ul class="analysis-list">${gapBits}</ul>` : ""}
+      ${slowBits ? `<h3 class="section tight">Slowest correct answers</h3><ul class="analysis-list">${slowBits}</ul>` : ""}
       ${moved ? `<h3 class="section tight">What moved</h3><ul class="analysis-list">${moved}</ul>` : ""}
       ${weak ? `<h3 class="section tight">Still weak</h3><ul class="analysis-list">${weak}</ul>` : ""}
       <p class="next-up">${escapeHtml(a.next_time || "")}</p>

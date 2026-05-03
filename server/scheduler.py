@@ -141,7 +141,12 @@ def build_session_plan(
         for _ in range(reps):
             slots.append(_slot_from_key(t["fact_key"], t["skill_id"], "theme",
                                          display=t["display"],
-                                         reason=f"slow: {t['display']} ({t['median_latency_ms']}ms, target {t['target_ms']}ms)"))
+                                         reason=f"slow: {t['display']} ({t['median_latency_ms']}ms, target {t['target_ms']}ms)",
+                                         target_ms=t["target_ms"],
+                                         diagnosis_median_latency_ms=t["median_latency_ms"],
+                                         diagnosis_accuracy=t["accuracy"],
+                                         diagnosis_n=t["n"],
+                                         diagnosis_gap_ratio=t["gap_ratio"]))
 
     for i in range(related_n):
         theme = themes[i % num_themes]
@@ -149,12 +154,17 @@ def build_session_plan(
         if rel_key:
             slots.append(_slot_from_key(rel_key, _skill_from_key(rel_key) or theme["skill_id"],
                                          "related",
+                                         target_ms=skill_targets.get(_skill_from_key(rel_key) or theme["skill_id"]),
                                          reason=f"related to {theme['display']}"))
 
     for i in range(retention_n):
         m = retention_pool[i]
         slots.append(_slot_from_key(m["fact_key"], m["skill_id"], "retention",
                                      display=m["display"],
+                                     target_ms=m.get("target_ms"),
+                                     diagnosis_median_latency_ms=m.get("median_latency_ms"),
+                                     diagnosis_accuracy=m.get("accuracy"),
+                                     diagnosis_n=m.get("n"),
                                      reason=f"retention check: {m['display']} (last seen {m['days_since_seen']}d ago)"))
 
     slots = _spread_duplicates(slots)
@@ -207,6 +217,11 @@ def _slot_from_key(
     role: str,
     display: str | None = None,
     reason: str | None = None,
+    target_ms: int | None = None,
+    diagnosis_median_latency_ms: int | None = None,
+    diagnosis_accuracy: float | None = None,
+    diagnosis_n: int | None = None,
+    diagnosis_gap_ratio: float | None = None,
 ) -> dict:
     return {
         "skill_id": skill_id,
@@ -216,6 +231,11 @@ def _slot_from_key(
         "display": display or diagnosis.fact_display(fact_key),
         "role": role,
         "reason": reason or f"{role}: {display or fact_key}",
+        "target_ms": target_ms,
+        "diagnosis_median_latency_ms": diagnosis_median_latency_ms,
+        "diagnosis_accuracy": diagnosis_accuracy,
+        "diagnosis_n": diagnosis_n,
+        "diagnosis_gap_ratio": diagnosis_gap_ratio,
     }
 
 
