@@ -1,73 +1,81 @@
-Now let me go through everything carefully. Your core complaint right now is: **the app doesn't show me it understands my weaknesses, and drills still feel random.** That's the top of the list. Everything else flows from the full thread.
+# TODO
 
----
+Current product concern: the app is starting to show session intent and post-session fluency feedback, but the diagnosis vocabulary is still too coarse. A label like "three-digit minus two-digit, with borrow" is a generator bucket, not a satisfying weakness explanation. The next product step is to figure out the right diagnostic level before adding more review polish.
 
-## Prioritized TODOs
+## Tier 1 — Make Weaknesses Specific Enough To Be Believable
 
-### Tier 1 — The app doesn't feel like it knows me
+1. **Design diagnostic features instead of relying on broad skill buckets.** Addition/subtraction/percent attempts need interpretable feature tags that explain *why* a problem was hard, not just which generator bucket produced it. Examples to evaluate:
+   - `sub.borrow.ones`
+   - `sub.borrow.across_zero`
+   - `sub.crosses_hundred`
+   - `sub.subtrahend_high_ones`
+   - `sub.subtrahend_ends_5`
+   - `add.carry.ones`
+   - `add.carry.tens`
+   - `pct.unfriendly_base`
+   - `pct.requires_fraction_decomposition`
 
-1. **Session review should show diagnosis, not just a score table.** After each session, show: "Here's what you're slowest at, here's what you got wrong, here's what the next session will focus on." Right now the review screen is a generic attempts table with correct/wrong/latency. It should surface the diagnosis engine's output — slowest facts, patterns, regressions — so the user sees the system is learning.
+   The review should be able to say: "Today's slow correct answers clustered around ones-place borrowing and crossing a hundred boundary," rather than "you are weak at 3-digit minus 2-digit subtraction."
 
-2. **Drill sessions don't feel targeted enough.** The diagnosis scheduler was just built but hasn't been tested with real data. Possible issues: (a) cold-start fallback fires too often because `min_attempts=2` is too high for new fact keys, (b) the weighted-random top-8 sampling is too diffuse — if you have 8 slow facts, sessions should hammer 2–3 of them, not sprinkle one of each, (c) session length of 5 is too short for the scheduler to build a coherent theme within a session.
+2. **Figure out claim strength for feature-level diagnostics.** The app should distinguish:
+   - session evidence: "today's slow attempts had this feature"
+   - provisional pattern: "this has appeared across a few sessions"
+   - stable weakness: "this is now a reliable weakness record"
 
-3. **Inconsistent fact granularity on the profile page.** You noticed: multiplication shows specific problems (9×11) but addition shows pattern buckets (2d+2d). This is by design in the diagnosis engine (mul facts repeat; add problems don't), but the profile should make this coherent. Options: (a) for multiplication, group by factor family (×7 facts, ×8 facts) in addition to individual pairs, (b) for addition/subtraction, show the pattern bucket label in a way that reads naturally ("2-digit + 2-digit with carry" not "2d+2d:c"), (c) consider showing representative slow *problems* from add/sub too, not just the bucket.
+   Do not present feature tags as stable weaknesses until the evidence supports it.
 
-4. **Increase default drill session length.** 5 questions isn't enough to feel like targeted work. Move to 10–15 so the scheduler can cluster related problems within a session.
+3. **Make diagnosis records trace back to attempts.** Any review statement should be explainable from stored attempt data: skill, parameters, latency, correctness, derived fact key, derived feature tags, target latency, and sample size. Avoid adding a parallel "feedback" island that cannot be reconciled with the weakness/skill-state records.
 
-5. **Within-session clustering.** When the scheduler picks a weakness, it should stick with it for a few problems in a row, not switch every question. E.g., if 7×8 is slow, give me 7×8 three times in a session mixed with other ×7 and ×8 facts, not one 7×8 then jump to subtraction.
+4. **Decide whether feature tags become scheduler targets.** First make feature-level diagnosis visible. Only then decide whether the scheduler should generate targeted probes like "subtraction with borrow across zero" or whether it should keep drilling concrete problems and merely use feature tags for analysis.
 
-### Tier 2 — Data quality and measurement
+## Tier 2 — Data Quality and Measurement
 
-6. **Parser bugs are still creating bad data.** The three fixed today (commas, decimals, colons) were silently scoring correct answers as wrong. Audit the existing attempt data for rows where the parser clearly failed — these pollute the diagnosis engine's stats. Consider a one-time cleanup script or just a "data since date X" filter.
+5. **Parser bugs are still creating bad data.** The earlier comma/decimal/colon fixes prevented new silent failures, but existing polluted attempts may still feed diagnosis. Audit attempt data for obvious parser failures and decide whether to filter them by date, mark them invalid, or run a one-time cleanup.
 
-7. **STT mishearing.** Some wrong scores are genuine Whisper errors (you said 71, it heard 91). Track the rate. If it's >5% of attempts, consider: (a) a "that's not what I said" button that lets the user retry without recording a wrong attempt, (b) passing a constrained vocabulary hint to the STT model.
+6. **STT mishearing.** Some wrong scores are genuine transcription errors. Track the rate. If it is high enough, consider a "that's not what I said" correction path that excludes the attempt from diagnosis.
 
-8. **"1,078" parsed as 1 was scored as wrong and recorded.** Those bad attempts are now in the DB feeding the diagnosis engine. The diagnosis engine should either ignore obviously bad data (e.g., parsed_answer of 1 when expected was 1078 — that's a 99.9% error, clearly a parse failure not a math failure) or we should retroactively clean them.
+7. **Ignore impossible parse failures in diagnosis.** If parsed answer is wildly far from expected in a way that strongly suggests parsing rather than math, the diagnosis engine should not treat it as evidence of arithmetic weakness without review.
 
-### Tier 3 — UX and session flow
+## Tier 3 — UX and Session Flow
 
-9. **Start screen should show a one-line diagnosis teaser.** Before starting a drill: "Your slowest: 7×8 (8200ms), 2d+2d carry (6100ms). This session will focus on those." Sets expectations, shows the system is thinking.
+8. **The "Hold to answer" instruction should shorten or disappear once the user knows the flow.** After the first few sessions, it becomes noise.
 
-10. **Skip mid-drill LLM feedback for now.** The current feedback path can make the drill feel narrated and generic. Remove it from the near-term drill loop. Future work can revisit post-session or stubborn-pattern feedback only, with explicit trigger rules and privacy/redaction handling.
+9. **Spacebar-hold ergonomics.** Consider an alternative: tap to start recording, tap to stop. Hold-to-talk is awkward for longer answers where the user is thinking while answering.
 
-11. **The "Hold to answer" instruction should shorten or disappear once the user knows the flow.** After the first session, it's just noise.
+10. **Low-confidence diagnosis should still be useful.** The app now shows exploratory session fluency feedback, but the copy should keep improving: low confidence should mean "not yet stable," not "no signal."
 
-12. **Spacebar-hold ergonomics.** Consider an alternative: tap to start recording, tap to stop. Hold-to-talk is awkward for longer answers where you're thinking out loud.
+## Tier 4 — Curriculum and Problem Generation
 
-### Tier 4 — Curriculum and problem generation
+11. **Multiplication: add 3x3 through 9x9 as a distinct L1.5 tier.** Currently L1 is only x2, x5, x10 and L2 jumps straight to x6-x12. The hard table facts should be drillable as a focused set, not mixed in with x11 and x12.
 
-13. **Multiplication: add 3×3 through 9×9 as a distinct L1.5 tier.** Currently L1 is only ×2, ×5, ×10 and L2 jumps straight to ×6–×12. The "hard table facts" (6×7, 7×8, 8×9) are the canonical retrieval bottleneck and should be drillable as a focused set, not mixed in with ×11 and ×12.
+12. **Addition/subtraction buckets are probably too coarse.** This is now part of the diagnostic-feature work, not just a label-cleanup task. `2d+2d:c` and `3d-2d:b` cover too many different mental routines.
 
-14. **Addition/subtraction pattern buckets may be too coarse.** `2d+2d:c` covers everything from 15+17 to 89+97. These are very different problems. Consider splitting by sum range or by whether there's a tens-carry only vs. ones-and-tens carry.
+13. **Percent drills need more variety.** The percentage pool is small, and real-life tax/tip/discount problems include less friendly rates and bases.
 
-15. **Percent drills need more variety.** The percentage pool is small (10, 15, 18, 20, 25, 50). Real-life tipping and tax uses 7%, 8%, 8.875% (NYC sales tax), etc. The base pool is also small.
+14. **Future feedback design: if/how to improve coaching.** Keep mid-drill LLM feedback out of scope. If feedback returns, it should be post-session or stubborn-pattern only, grounded in stored diagnostic evidence with explicit privacy/redaction rules.
 
-16. **Future feedback design: if/how to improve coaching.** Park this until the drill loop feels diagnostic and grounded. If revisited, feedback should be post-session or triggered only by repeated evidence on a stubborn fact/pattern; it should not fire mid-drill on every wrong or slow answer.
+## Tier 5 — Data Pipeline and Adaptation
 
-### Tier 5 — Data pipeline and adaptation
+15. **Per-user adaptive latency targets.** The skill-wide targets are starting guesses. Once a user consistently beats a target, it should tighten, and the profile should show why.
 
-17. **Per-user adaptive latency targets.** The skill-wide targets (5000ms addition, 6000ms multiplication) are starting guesses. Once a user consistently beats a target, it should tighten. The research doc notes this explicitly as a design intent that isn't implemented.
+16. **Retention schedule needs to mature.** Sessions now include simple retention picks, but the interval logic is still basic. Mastered facts should resurface at growing intervals and flag decay when latency creeps up.
 
-18. **Spaced retrieval for mastered facts.** Facts that are fast and accurate should resurface at growing intervals to detect decay. Currently mastered facts just drop off the priority list and never come back.
+## Tier 6 — Grounded/Real-Life Problems
 
-19. **Regression detection should influence the scheduler.** The diagnosis engine detects regressions but the scheduler doesn't currently weight them differently from just being slow. A regression (was fast, now slow) should be higher priority than a fact that was always slow.
+17. **Pull from calendar for time-math problems.** Calendar can be one authentic grounding source, but it should not become the whole grounding strategy.
 
-### Tier 6 — Grounded/real-life problems
+18. **Add CSV/manual expense grounding before direct finance integrations.** Let the user provide Chase Sapphire, Simplifi, or other finance exports as local CSV files; also support a manually maintained recurring-numbers file for rent, subscriptions, commute time, usual meal costs, budgets, and savings targets.
 
-20. **Pull from calendar for time-math problems.** "Your meeting is at 2:15, it's 1:47, how many minutes until it starts?" This was in the original plan as the "grounding layer."
+19. **Expense-grounded generators should be source-native.** Use real transaction/category/budget data for tip, tax, discount, split, total, and budget-delta drills. Do not wrap arbitrary weak facts in fake personal scenarios.
 
-21. **Add CSV/manual expense grounding before direct finance integrations.** Let the user provide Chase Sapphire, Simplifi, or other finance exports as local CSV files; also support a small manually maintained recurring-numbers file for rent, subscriptions, commute time, usual meal costs, budgets, and savings targets. Do not assume a direct bank/plugin integration until CSV/manual grounding proves useful.
+20. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion, and similar grounded skills need their own generators, tolerances, fact keys, and diagnostic features.
 
-22. **Expense-grounded generators should be source-native.** Use real transaction/category/budget data for tip, tax, discount, split, total, and budget-delta drills. Do not wrap arbitrary weak facts in fake personal scenarios; plain abstract drills are better than contrived relevance.
+## Tier 7 — Infrastructure
 
-23. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion — these are distinct from the current four skills and need their own generators, tolerances, and fact keys.
+21. **Debug panel takes up half the screen.** Make it collapsible or hidden by default.
 
-### Tier 7 — Infrastructure
+22. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane.
 
-24. **Debug panel takes up half the screen.** It was useful during development but now it's permanent real estate. Make it collapsible or hidden by default.
+23. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
 
-25. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane. If this ever runs on a phone (e.g., while commuting), the layout needs to be responsive.
-
-26. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
-
-27. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If the user wants to practice from multiple machines, the data doesn't follow.
+24. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If practice happens from multiple machines, data does not follow.
