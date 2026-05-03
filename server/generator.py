@@ -10,6 +10,8 @@ Returns:
 
 import random
 
+from server import money
+
 
 def mastery_to_level(mastery: float) -> int:
     if mastery < 0.4:
@@ -207,11 +209,18 @@ def _gen_percent_of(level: int, target: dict | None = None) -> dict:
     }
 
 
+def _gen_money_arithmetic(level: int, target: dict | None = None) -> dict:
+    problem = money.generate_problem(target=target)
+    problem["parameters"]["level"] = level
+    return problem
+
+
 GENERATORS = {
     "addition": _gen_addition,
     "subtraction": _gen_subtraction,
     "multiplication": _gen_multiplication,
     "percent_of": _gen_percent_of,
+    "money_arithmetic": _gen_money_arithmetic,
 }
 
 

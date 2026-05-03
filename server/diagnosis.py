@@ -55,6 +55,12 @@ def fact_key(skill_id: str, parameters: dict) -> str | None:
             return None
         return f"pct:{int(pct)}"
 
+    if skill_id == "money_arithmetic":
+        operation = parameters.get("operation")
+        if not operation:
+            return None
+        return f"money:{operation}"
+
     return None
 
 
@@ -104,6 +110,8 @@ def fact_display(key: str) -> str:
         return f"{base}, with borrow" if tag == "b" else base
     if key.startswith("pct:"):
         return f"{key[4:]}%"
+    if key.startswith("money:"):
+        return "Money: " + key[6:].replace("_", " ")
     return key
 
 

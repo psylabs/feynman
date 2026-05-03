@@ -41,3 +41,14 @@
     percentages: [5, 10, 15, 18, 20, 25, 50]
   templates:
     - "What is {pct} percent of {base}?"
+
+- id: money_arithmetic
+  parent: grounded
+  display_name: Money arithmetic
+  target_latency_ms: 12000
+  tolerance:
+    type: money
+  parameter_schema:
+    operations: [charge_total, category_difference, category_share]
+  templates:
+    - "Use transaction data to answer this money question."

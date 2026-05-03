@@ -378,6 +378,8 @@ def _fact_key_to_target(key: str) -> dict | None:
     if key.startswith("pct:"):
         pct = int(key[4:])
         return {"percentage": pct}
+    if key.startswith("money:"):
+        return {"operation": key[6:]}
     return None
 
 
