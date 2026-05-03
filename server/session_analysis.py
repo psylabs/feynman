@@ -3,6 +3,8 @@
 import statistics
 from collections import Counter, defaultdict
 
+from server import diagnosis
+
 
 ROLE_LABELS = {
     "theme": "focused",
@@ -28,7 +30,7 @@ def plan_summary(slots: list[dict]) -> dict:
     }
 
 
-def review_analysis(slots: list[dict], attempts: list[dict]) -> dict:
+def review_analysis(slots: list[dict], attempts: list[dict], exploratory: bool = False) -> dict:
     """Compare completed attempts against the session plan."""
     by_position = {
         int(a.get("position_in_session")): a
@@ -66,8 +68,13 @@ def review_analysis(slots: list[dict], attempts: list[dict]) -> dict:
     fluency_gaps.sort(key=lambda r: r.get("gap_ratio") or 0, reverse=True)
     slowest_correct = sorted(correct_attempts, key=lambda r: r["latency_ms"], reverse=True)[:3]
 
+    plan = plan_summary(slots)
+    if exploratory:
+        plan["intent"] = "This session was exploratory; the analysis below is based on the facts you just answered."
+        plan["mix"] = "Mix: exploratory."
+
     return {
-        "plan": plan_summary(slots),
+        "plan": plan,
         "role_stats": role_stats,
         "focus_stats": focus_stats,
         "fluency_gaps": fluency_gaps,
@@ -76,6 +83,35 @@ def review_analysis(slots: list[dict], attempts: list[dict]) -> dict:
         "still_weak": _weak_lines(focus_stats),
         "next_time": _next_time_line(focus_stats),
     }
+
+
+def exploratory_review_analysis(
+    attempts: list[dict],
+    fact_stats: dict[str, dict],
+    skill_target_latencies: dict[str, int],
+) -> dict | None:
+    """Build session analysis for drills that had no precomputed plan."""
+    slots = []
+    for attempt in attempts:
+        fact_key = _fact_key_for_attempt(attempt)
+        if not fact_key:
+            continue
+        stat = fact_stats.get(fact_key) or {}
+        skill_id = attempt.get("skill_id")
+        target_ms = skill_target_latencies.get(skill_id)
+        slots.append({
+            "role": "theme",
+            "skill_id": skill_id,
+            "fact_key": fact_key,
+            "display": diagnosis.fact_display(fact_key),
+            "target_ms": target_ms,
+            "diagnosis_median_latency_ms": stat.get("median_latency_ms"),
+            "diagnosis_accuracy": stat.get("accuracy"),
+            "diagnosis_n": stat.get("n"),
+        })
+    if not slots:
+        return None
+    return review_analysis(slots, attempts, exploratory=True)
 
 
 def _role_counts(slots: list[dict]) -> dict[str, int]:
@@ -122,6 +158,17 @@ def _attempt_stats(rows: list[dict]) -> dict:
         "accuracy": round(correct / total, 3) if total else None,
         "median_latency_ms": int(statistics.median(latencies)) if latencies else None,
     }
+
+
+def _fact_key_for_attempt(attempt: dict) -> str | None:
+    params = attempt.get("parameters") or {}
+    if isinstance(params, str):
+        import json
+        try:
+            params = json.loads(params)
+        except (TypeError, ValueError):
+            return None
+    return diagnosis.fact_key(attempt.get("skill_id", ""), params)
 
 
 def _focus_stat(slot: dict, rows: list[dict]) -> dict:

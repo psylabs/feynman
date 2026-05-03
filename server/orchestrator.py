@@ -125,6 +125,12 @@ class Orchestrator:
         analysis = None
         if session["mode"] == "drill" and meta.get("original_plan"):
             analysis = session_analysis.review_analysis(meta["original_plan"], attempts)
+        elif session["mode"] == "drill":
+            analysis = session_analysis.exploratory_review_analysis(
+                attempts,
+                fact_stats,
+                skill_targets,
+            )
 
         return {
             "session_id": sid,

@@ -10,8 +10,13 @@ class FakeBus:
 
 
 class FakeStorage:
-    def __init__(self):
+    def __init__(self, attempts=None, skill_ids=None):
         self.sid = "session-1"
+        self.attempts = attempts or [
+            {"position_in_session": 1, "correct": 1, "resolution_latency_ms": 4200},
+            {"position_in_session": 2, "correct": 0, "resolution_latency_ms": 7100},
+        ]
+        self.skill_ids = skill_ids or []
 
     def get_user(self, user_id):
         return {"id": user_id, "name": "Mo"} if user_id == "user-1" else None
@@ -29,16 +34,13 @@ class FakeStorage:
         pass
 
     def session_attempts(self, sid):
-        return [
-            {"position_in_session": 1, "correct": 1, "resolution_latency_ms": 4200},
-            {"position_in_session": 2, "correct": 0, "resolution_latency_ms": 7100},
-        ]
+        return self.attempts
 
     def all_attempts_for_user(self, user_id, limit=300):
-        return []
+        return self.attempts
 
     def all_skill_ids(self):
-        return []
+        return self.skill_ids
 
     def get_skill(self, skill_id):
         return {"id": skill_id, "target_latency_ms": 5000, "tolerance": {"type": "exact"}}
@@ -80,6 +82,36 @@ class OrchestratorSessionPlanTests(unittest.TestCase):
 
         self.assertEqual(started["session_plan"]["focus"], [])
         self.assertIn("exploratory", started["session_plan"]["intent"])
+
+    def test_end_includes_latency_analysis_for_exploratory_session(self):
+        attempts = [
+            {
+                "position_in_session": 1,
+                "skill_id": "multiplication",
+                "parameters": {"a": 12, "b": 9},
+                "correct": 1,
+                "onset_latency_ms": 1200,
+                "resolution_latency_ms": 6500,
+            },
+            {
+                "position_in_session": 2,
+                "skill_id": "multiplication",
+                "parameters": {"a": 7, "b": 12},
+                "correct": 1,
+                "onset_latency_ms": 800,
+                "resolution_latency_ms": 3500,
+            },
+        ]
+        orch = Orchestrator(FakeStorage(attempts=attempts, skill_ids=["multiplication"]), FakeBus())
+
+        with patch("server.scheduler.build_session_plan", return_value=[]):
+            orch.start_session("user-1", "drill", target_questions=2)
+            ended = orch.end_session("session-1")
+
+        self.assertIsNotNone(ended["session_analysis"])
+        self.assertIn("exploratory", ended["session_analysis"]["plan"]["intent"])
+        self.assertEqual(ended["session_analysis"]["fluency_gaps"][0]["fact_key"], "mul:9x12")
+        self.assertEqual(ended["session_analysis"]["fluency_gaps"][0]["target_ms"], 5000)
 
     def test_submit_does_not_request_mid_drill_feedback(self):
         orch = Orchestrator(FakeStorage(), FakeBus())
