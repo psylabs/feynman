@@ -127,11 +127,16 @@ def build_session_plan(
     if length >= 12 and len(retention_pool) >= 2:
         retention_n = 2
 
+    exploration = _exploration_pick(storage, user_id, skill_targets, themes)
+    exploration_n = 1 if exploration and length >= 5 else 0
+
     related_n = 1 if length >= 5 else 0
     if length >= 10:
         related_n = 2
+    if exploration_n and length <= 5:
+        related_n = 0
 
-    theme_total = max(0, length - retention_n - related_n)
+    theme_total = max(0, length - retention_n - related_n - exploration_n)
     base_reps = theme_total // num_themes
     extra = theme_total % num_themes
 
@@ -167,6 +172,9 @@ def build_session_plan(
                                      diagnosis_n=m.get("n"),
                                      reason=f"retention check: {m['display']} (last seen {m['days_since_seen']}d ago)"))
 
+    if exploration_n and exploration:
+        slots.append(exploration)
+
     slots = _spread_duplicates(slots)
 
     emit(
@@ -179,6 +187,7 @@ def build_session_plan(
         ],
         retention_count=retention_n,
         related_count=related_n,
+        exploration_count=exploration_n,
         slots=[{"fact": s["fact_key"], "role": s["role"]} for s in slots],
     )
     return slots
@@ -209,6 +218,47 @@ def _select_diverse_themes(priorities: list[dict], n: int) -> list[dict]:
             break
         chosen.append(p)
     return chosen
+
+
+def _exploration_pick(storage, user_id: str, skill_targets: dict, themes: list[dict]) -> dict | None:
+    """Return one low-sample skill slot so new skills enter real drills."""
+    theme_skills = {t["skill_id"] for t in themes}
+    candidates = []
+    for sid in storage.all_skill_ids():
+        if sid in theme_skills:
+            continue
+        count = storage.skill_attempt_count(user_id, sid)
+        if count < 2:
+            candidates.append((count, sid))
+    if not candidates:
+        return None
+
+    count, skill_id = sorted(candidates)[0]
+    fact_key = _exploration_fact_key(skill_id)
+    return {
+        "skill_id": skill_id,
+        "target_fact": _fact_key_to_target(fact_key) if fact_key else None,
+        "level": 1,
+        "fact_key": fact_key or skill_id,
+        "display": diagnosis.fact_display(fact_key) if fact_key else skill_id,
+        "role": "exploration",
+        "reason": f"explore under-sampled skill: {skill_id}",
+        "target_ms": skill_targets.get(skill_id),
+        "diagnosis_median_latency_ms": None,
+        "diagnosis_accuracy": None,
+        "diagnosis_n": count,
+        "diagnosis_gap_ratio": None,
+    }
+
+
+def _exploration_fact_key(skill_id: str) -> str | None:
+    if skill_id == "money_arithmetic":
+        return random.choice([
+            "money:charge_total",
+            "money:category_difference",
+            "money:category_share",
+        ])
+    return None
 
 
 def _slot_from_key(

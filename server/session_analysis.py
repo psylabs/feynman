@@ -10,6 +10,7 @@ ROLE_LABELS = {
     "theme": "focused",
     "related": "related",
     "retention": "retention",
+    "exploration": "exploration",
 }
 
 
@@ -115,7 +116,7 @@ def exploratory_review_analysis(
 
 
 def _role_counts(slots: list[dict]) -> dict[str, int]:
-    counts = {"theme": 0, "related": 0, "retention": 0}
+    counts = {role: 0 for role in ROLE_LABELS}
     for slot in slots:
         role = slot.get("role")
         if role in counts:
@@ -137,7 +138,7 @@ def _intent_sentence(focus: list[str]) -> str:
 
 def _mix_sentence(counts: dict[str, int]) -> str:
     parts = []
-    for role in ("theme", "related", "retention"):
+    for role in ("theme", "related", "retention", "exploration"):
         n = counts.get(role, 0)
         if n:
             parts.append(f"{n} {ROLE_LABELS[role]}")

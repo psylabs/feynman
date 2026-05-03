@@ -476,10 +476,10 @@
     const gaps = a.fluency_gaps || [];
     const slowestCorrect = a.slowest_correct || [];
     const focus = plan.focus?.length ? plan.focus.map(escapeHtml).join(", ") : "exploratory mix";
-    const roleBits = ["theme", "related", "retention"].map((role) => {
+    const roleBits = ["theme", "related", "retention", "exploration"].map((role) => {
       const r = roleStats[role];
       if (!r || !r.total) return "";
-      const label = role === "theme" ? "Focused" : role === "related" ? "Related" : "Retention";
+      const label = role === "theme" ? "Focused" : role === "related" ? "Related" : role === "retention" ? "Retention" : "Exploration";
       return `<div class="stat"><div class="label">${label}</div><div class="value">${r.correct}/${r.total}</div><div class="sub">${fmtSec(r.median_latency_ms)}</div></div>`;
     }).filter(Boolean).join("");
     const focusBits = focusRows.slice(0, 3).map((r) =>
