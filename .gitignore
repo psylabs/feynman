@@ -9,6 +9,7 @@ dist/
 .idea/
 .vscode/
 .claude/settings.local.json
+.claude
 
 data/
 logs/
