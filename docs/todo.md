@@ -5,77 +5,47 @@ Current product concern: the app is starting to show session intent and post-ses
 ## Tier 1 — Make Weaknesses Specific Enough To Be Believable
 
 1. **Design diagnostic features instead of relying on broad skill buckets.** Addition/subtraction/percent attempts need interpretable feature tags that explain *why* a problem was hard, not just which generator bucket produced it. Examples to evaluate:
-   - `sub.borrow.ones`
-   - `sub.borrow.across_zero`
-   - `sub.crosses_hundred`
-   - `sub.subtrahend_high_ones`
-   - `sub.subtrahend_ends_5`
-   - `add.carry.ones`
-   - `add.carry.tens`
-   - `pct.unfriendly_base`
-   - `pct.requires_fraction_decomposition`
-
+  - `sub.borrow.ones`
+  - `sub.borrow.across_zero`
+  - `sub.crosses_hundred`
+  - `sub.subtrahend_high_ones`
+  - `sub.subtrahend_ends_5`
+  - `add.carry.ones`
+  - `add.carry.tens`
+  - `pct.unfriendly_base`
+  - `pct.requires_fraction_decomposition`
    The review should be able to say: "Today's slow correct answers clustered around ones-place borrowing and crossing a hundred boundary," rather than "you are weak at 3-digit minus 2-digit subtraction."
-
 2. **Figure out claim strength for feature-level diagnostics.** The app should distinguish:
-   - session evidence: "today's slow attempts had this feature"
-   - provisional pattern: "this has appeared across a few sessions"
-   - stable weakness: "this is now a reliable weakness record"
-
+  - session evidence: "today's slow attempts had this feature"
+  - provisional pattern: "this has appeared across a few sessions"
+  - stable weakness: "this is now a reliable weakness record"
    Do not present feature tags as stable weaknesses until the evidence supports it.
-
 3. **Make diagnosis records trace back to attempts.** Any review statement should be explainable from stored attempt data: skill, parameters, latency, correctness, derived fact key, derived feature tags, target latency, and sample size. Avoid adding a parallel "feedback" island that cannot be reconciled with the weakness/skill-state records.
-
 4. **Decide whether feature tags become scheduler targets.** First make feature-level diagnosis visible. Only then decide whether the scheduler should generate targeted probes like "subtraction with borrow across zero" or whether it should keep drilling concrete problems and merely use feature tags for analysis.
-
-## Tier 2 — Data Quality and Measurement
-
-5. **Parser bugs are still creating bad data.** The earlier comma/decimal/colon fixes prevented new silent failures, but existing polluted attempts may still feed diagnosis. Audit attempt data for obvious parser failures and decide whether to filter them by date, mark them invalid, or run a one-time cleanup.
-
-6. **STT mishearing.** Some wrong scores are genuine transcription errors. Track the rate. If it is high enough, consider a "that's not what I said" correction path that excludes the attempt from diagnosis.
-
-7. **Ignore impossible parse failures in diagnosis.** If parsed answer is wildly far from expected in a way that strongly suggests parsing rather than math, the diagnosis engine should not treat it as evidence of arithmetic weakness without review.
-
-## Tier 3 — UX and Session Flow
-
-8. **The "Hold to answer" instruction should shorten or disappear once the user knows the flow.** After the first few sessions, it becomes noise.
-
-9. **Spacebar-hold ergonomics.** Consider an alternative: tap to start recording, tap to stop. Hold-to-talk is awkward for longer answers where the user is thinking while answering.
-
-10. **Low-confidence diagnosis should still be useful.** The app now shows exploratory session fluency feedback, but the copy should keep improving: low confidence should mean "not yet stable," not "no signal."
 
 ## Tier 4 — Curriculum and Problem Generation
 
-11. **Multiplication: add 3x3 through 9x9 as a distinct L1.5 tier.** Currently L1 is only x2, x5, x10 and L2 jumps straight to x6-x12. The hard table facts should be drillable as a focused set, not mixed in with x11 and x12.
-
-12. **Addition/subtraction buckets are probably too coarse.** This is now part of the diagnostic-feature work, not just a label-cleanup task. `2d+2d:c` and `3d-2d:b` cover too many different mental routines.
-
-13. **Percent drills need more variety.** The percentage pool is small, and real-life tax/tip/discount problems include less friendly rates and bases.
-
-14. **Future feedback design: if/how to improve coaching.** Keep mid-drill LLM feedback out of scope. If feedback returns, it should be post-session or stubborn-pattern only, grounded in stored diagnostic evidence with explicit privacy/redaction rules.
+1. **Multiplication: add 3x3 through 9x9 as a distinct L1.5 tier.** Currently L1 is only x2, x5, x10 and L2 jumps straight to x6-x12. The hard table facts should be drillable as a focused set, not mixed in with x11 and x12.
+2. **Addition/subtraction buckets are probably too coarse.** This is now part of the diagnostic-feature work, not just a label-cleanup task. `2d+2d:c` and `3d-2d:b` cover too many different mental routines.
+3. **Percent drills need more variety.** The percentage pool is small, and real-life tax/tip/discount problems include less friendly rates and bases.
+4. **Future feedback design: if/how to improve coaching.** Keep mid-drill LLM feedback out of scope. If feedback returns, it should be post-session or stubborn-pattern only, grounded in stored diagnostic evidence with explicit privacy/redaction rules.
 
 ## Tier 5 — Data Pipeline and Adaptation
 
-15. **Per-user adaptive latency targets.** The skill-wide targets are starting guesses. Once a user consistently beats a target, it should tighten, and the profile should show why.
-
-16. **Retention schedule needs to mature.** Sessions now include simple retention picks, but the interval logic is still basic. Mastered facts should resurface at growing intervals and flag decay when latency creeps up.
+1. **Per-user adaptive latency targets.** The skill-wide targets are starting guesses. Once a user consistently beats a target, it should tighten, and the profile should show why.
+2. **Retention schedule needs to mature.** Sessions now include simple retention picks, but the interval logic is still basic. Mastered facts should resurface at growing intervals and flag decay when latency creeps up.
 
 ## Tier 6 — Grounded/Real-Life Problems
 
-17. **Pull from calendar for time-math problems.** Calendar can be one authentic grounding source, but it should not become the whole grounding strategy.
-
-18. **Add CSV/manual expense grounding before direct finance integrations.** Let the user provide Chase Sapphire, Simplifi, or other finance exports as local CSV files; also support a manually maintained recurring-numbers file for rent, subscriptions, commute time, usual meal costs, budgets, and savings targets.
-
-19. **Expense-grounded generators should be source-native.** Use real transaction/category/budget data for tip, tax, discount, split, total, and budget-delta drills. Do not wrap arbitrary weak facts in fake personal scenarios.
-
-20. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion, and similar grounded skills need their own generators, tolerances, fact keys, and diagnostic features.
+1. **Pull from calendar for time-math problems.** Calendar can be one authentic grounding source, but it should not become the whole grounding strategy.
+2. **Add CSV/manual expense grounding before direct finance integrations.** Let the user provide Chase Sapphire, Simplifi, or other finance exports as local CSV files; also support a manually maintained recurring-numbers file for rent, subscriptions, commute time, usual meal costs, budgets, and savings targets.
+3. **Expense-grounded generators should be source-native.** Use real transaction/category/budget data for tip, tax, discount, split, total, and budget-delta drills. Do not wrap arbitrary weak facts in fake personal scenarios.
+4. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion, and similar grounded skills need their own generators, tolerances, fact keys, and diagnostic features.
 
 ## Tier 7 — Infrastructure
 
-21. **Debug panel takes up half the screen.** Make it collapsible or hidden by default.
+1. **Debug panel takes up half the screen.** Make it collapsible or hidden by default.
+2. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane.
+3. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
+4. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If practice happens from multiple machines, data does not follow.
 
-22. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane.
-
-23. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
-
-24. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If practice happens from multiple machines, data does not follow.
