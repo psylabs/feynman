@@ -288,7 +288,9 @@ app.mount("/", NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="stat
 def main():
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
+    host = os.environ.get("FEYNMAN_HOST", "0.0.0.0")
+    port = int(os.environ.get("FEYNMAN_PORT", "8765"))
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
