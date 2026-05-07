@@ -35,10 +35,13 @@ class MoneyTests(unittest.TestCase):
 
         problem = money.generate_problem(rows, target={"operation": "charge_total"})
 
+        # Numbers are pre-rounded ("swagged") in the prompt; expected is the
+        # sum of the swagged numbers, not of the raw cents.
         self.assertIn("Trader Joe's", problem["prompt"])
-        self.assertIn("$18.42", problem["prompt"])
-        self.assertIn("$33.01", problem["prompt"])
-        self.assertEqual(problem["expected"], 51.43)
+        self.assertIn("$18", problem["prompt"])
+        self.assertIn("$33", problem["prompt"])
+        self.assertNotIn("$18.42", problem["prompt"])
+        self.assertEqual(problem["expected"], 51.0)
         self.assertEqual(problem["parameters"]["operation"], "charge_total")
 
     def test_generates_category_difference_prompt(self):
@@ -51,10 +54,13 @@ class MoneyTests(unittest.TestCase):
 
         problem = money.generate_problem(rows, target={"operation": "category_difference"})
 
+        # Category leaf in the prompt — no parent prefix that's awkward to TTS.
         self.assertIn("January 2026", problem["prompt"])
         self.assertIn("Groceries", problem["prompt"])
-        self.assertIn("Travel:Rental Car & Taxi", problem["prompt"])
-        self.assertEqual(problem["expected"], 22.68)
+        self.assertIn("Rental Car & Taxi", problem["prompt"])
+        self.assertNotIn("Travel:Rental Car & Taxi", problem["prompt"])
+        # 51.43 swag → 51; 28.75 swag → 29; diff = 22
+        self.assertEqual(problem["expected"], 22.0)
         self.assertEqual(problem["parameters"]["operation"], "category_difference")
 
     def test_generates_category_share_prompt(self):
@@ -66,8 +72,10 @@ class MoneyTests(unittest.TestCase):
         problem = money.generate_problem(rows, target={"operation": "category_share"})
 
         self.assertIn("January 2026", problem["prompt"])
-        self.assertIn("Dining & Drinks:Restaurants", problem["prompt"])
-        self.assertIn("$100.00", problem["prompt"])
+        self.assertIn("Restaurants", problem["prompt"])
+        self.assertNotIn("Dining & Drinks:Restaurants", problem["prompt"])
+        self.assertIn("$100", problem["prompt"])
+        self.assertNotIn("$100.00", problem["prompt"])
         self.assertEqual(problem["expected"], 75.0)
         self.assertEqual(problem["parameters"]["operation"], "category_share")
 

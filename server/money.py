@@ -68,20 +68,20 @@ def _charge_total(rows: list[dict]) -> dict:
     candidates = [xs for xs in groups.values() if len(xs) >= 2]
     sample = random.choice(candidates) if candidates else sorted(rows, key=lambda r: r["amount"], reverse=True)[:2]
     sample = sorted(sample[:3], key=lambda r: r["date"])
-    label = sample[0]["payee"] or sample[0]["category"]
-    amounts = [_round_money(r["amount"]) for r in sample]
-    total = _round_money(sum(amounts))
-    amount_text = _join_money(amounts)
+    label = _clean_label(sample[0]["payee"], sample[0]["category"])
+    swagged = [_swag(r["amount"]) for r in sample]
+    total = sum(swagged)
+    amount_text = _join_swagged(swagged)
     return {
-        "prompt": f"You had {len(amounts)} {label} charges: {amount_text}. What was the total?",
-        "expected": total,
+        "prompt": f"You had {len(swagged)} charges at {label}: {amount_text}. About what's the total?",
+        "expected": float(total),
         "parameters": {
             "operation": "charge_total",
             "source": "transactions.csv",
             "payee": label,
             "category": sample[0]["category"],
-            "count": len(amounts),
-            "amounts": amounts,
+            "count": len(swagged),
+            "amounts": swagged,
         },
     }
 
@@ -97,21 +97,26 @@ def _category_difference(rows: list[dict]) -> dict:
         key=lambda kv: kv[1],
         reverse=True,
     )[:2]
-    diff = _round_money(abs(total_a - total_b))
+    swag_a, swag_b = _swag(total_a), _swag(total_b)
+    if swag_a == swag_b:
+        # Don't ask "how much more" when they round to the same number.
+        return _charge_total(rows)
+    diff = abs(swag_a - swag_b)
+    label_a, label_b = _category_leaf(cat_a), _category_leaf(cat_b)
     return {
         "prompt": (
-            f"In {_month_label(month)}, your {cat_a} spend was {_fmt_money(total_a)} and {cat_b} was "
-            f"{_fmt_money(total_b)}. How much more was the larger category?"
+            f"In {_month_label(month)}, you spent about ${swag_a:,} on {label_a} "
+            f"and about ${swag_b:,} on {label_b}. How much more on {label_a}?"
         ),
-        "expected": diff,
+        "expected": float(diff),
         "parameters": {
             "operation": "category_difference",
             "source": "transactions.csv",
             "month": month,
             "category_a": cat_a,
             "category_b": cat_b,
-            "amount_a": total_a,
-            "amount_b": total_b,
+            "amount_a": swag_a,
+            "amount_b": swag_b,
         },
     }
 
@@ -122,22 +127,24 @@ def _category_share(rows: list[dict]) -> dict:
     totals = _category_totals(month_rows)
     if len(totals) < 2:
         return _charge_total(rows)
-    total = _round_money(sum(totals.values()))
+    total_swag = _swag(sum(totals.values()))
     category, amount = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[0]
-    pct = round((amount / total) * 100, 1) if total else 0.0
+    amount_swag = _swag(amount)
+    pct = round(amount_swag / total_swag * 100) if total_swag else 0
+    label = _category_leaf(category)
     return {
         "prompt": (
-            f"In {_month_label(month)}, {category} was {_fmt_money(amount)} out of {_fmt_money(total)} "
-            "in tracked expenses. About what percent was that?"
+            f"In {_month_label(month)}, {label} was about ${amount_swag:,} out of ${total_swag:,} "
+            "in tracked expenses. About what percent?"
         ),
-        "expected": pct,
+        "expected": float(pct),
         "parameters": {
             "operation": "category_share",
             "source": "transactions.csv",
             "month": month,
             "category": category,
-            "category_amount": amount,
-            "total_amount": total,
+            "category_amount": amount_swag,
+            "total_amount": total_swag,
         },
     }
 
@@ -205,13 +212,66 @@ def _round_money(n) -> float:
     return float(Decimal(str(n)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def _fmt_money(n: float) -> str:
-    return f"${n:.2f}"
+def _swag(amount) -> int:
+    """Round an amount to a clean ballpark integer.
+
+    Rule: < $100 → nearest dollar; $100–$1000 → nearest $10;
+    $1000–$10k → nearest $100; > $10k → nearest $500.
+    Pre-rounded numbers in the prompt + integer expected = deterministic
+    grading without forcing the user to recall cents.
+    """
+    n = abs(float(amount))
+    if n < 100:
+        unit = 1
+    elif n < 1000:
+        unit = 10
+    elif n < 10000:
+        unit = 100
+    else:
+        unit = 500
+    return int(round(n / unit) * unit)
 
 
-def _join_money(amounts: list[float]) -> str:
+def _join_swagged(amounts: list[int]) -> str:
+    fmt = lambda n: f"${n:,}"
     if len(amounts) == 1:
-        return _fmt_money(amounts[0])
+        return fmt(amounts[0])
     if len(amounts) == 2:
-        return f"{_fmt_money(amounts[0])} and {_fmt_money(amounts[1])}"
-    return ", ".join(_fmt_money(a) for a in amounts[:-1]) + f", and {_fmt_money(amounts[-1])}"
+        return f"{fmt(amounts[0])} and {fmt(amounts[1])}"
+    return ", ".join(fmt(a) for a in amounts[:-1]) + f", and {fmt(amounts[-1])}"
+
+
+_PAYEE_NOISE = ("Web Pay", "Online Bill", "ACH", "Direct Dep", "Bill Pay")
+
+
+def _clean_label(payee: str | None, category: str | None) -> str:
+    """Pick a TTS-friendly label for a charge group.
+
+    Bank exports often hand back things like '155 W. 21st St.-Web Pay-155W21-10D-Cu'.
+    Speak the category leaf instead of that. We accept the payee only when it
+    looks like a real name: no dashes, ≤25 chars after stripping known
+    payment-method noise.
+    """
+    p = (payee or "").strip()
+    for noise in _PAYEE_NOISE:
+        p = p.replace(noise, "").strip()
+    # If still has dashes (typical bank-coded payee), drop everything after
+    # the first dash and check whether what remains is short and clean.
+    if "-" in p:
+        p = p.split("-", 1)[0].strip().rstrip(".")
+    if p and len(p) <= 25 and not _looks_like_code(p):
+        return p
+    return _category_leaf(category) or "this charge"
+
+
+def _category_leaf(category: str | None) -> str:
+    """Strip parent prefixes ('Dining & Drinks:Restaurants' → 'Restaurants')."""
+    if not category:
+        return ""
+    return category.split(":")[-1].strip()
+
+
+def _looks_like_code(s: str) -> bool:
+    """Heuristic: too many digits or all-caps fragments to be a real merchant name."""
+    digits = sum(1 for c in s if c.isdigit())
+    return digits > len(s) // 3

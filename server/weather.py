@@ -95,9 +95,12 @@ def generate_problem(target: dict | None = None) -> dict:
 
 
 def _temp_delta(location: dict, forecast: dict) -> dict:
-    i, j = _two_distinct_indices(forecast)
-    a = int(round(forecast["t_max"][i]))
-    b = int(round(forecast["t_max"][j]))
+    pick = _pick_distinct_pair(forecast, "t_max")
+    if pick is None:
+        # Forecast is flat enough that no pair has a non-zero whole-degree
+        # difference. Fall back to a daily range question.
+        return _daily_range(location, forecast)
+    i, j, a, b = pick
     label_a = _day_label(forecast["dates"][i])
     label_b = _day_label(forecast["dates"][j])
     diff = abs(a - b)
@@ -165,9 +168,10 @@ def _f_to_c_approx(location: dict, forecast: dict) -> dict:
 
 
 def _wind_delta(location: dict, forecast: dict) -> dict:
-    i, j = _two_distinct_indices(forecast)
-    a = int(round(forecast["wind_max"][i]))
-    b = int(round(forecast["wind_max"][j]))
+    pick = _pick_distinct_pair(forecast, "wind_max")
+    if pick is None:
+        return _daily_range(location, forecast)
+    i, j, a, b = pick
     label_a = _day_label(forecast["dates"][i])
     label_b = _day_label(forecast["dates"][j])
     diff = abs(a - b)
@@ -258,6 +262,30 @@ def _two_distinct_indices(forecast: dict) -> tuple[int, int]:
     if j >= i:
         j += 1
     return i, j
+
+
+def _pick_distinct_pair(forecast: dict, field: str) -> tuple[int, int, int, int] | None:
+    """Pick two indices whose rounded `field` values differ.
+
+    Returns (i, j, a_int, b_int) or None if every pair rounds to the same
+    integer (a flat forecast). Caller falls back to a different op when None.
+    """
+    values = forecast.get(field) or []
+    n = len(values)
+    if n < 2:
+        return None
+    rounded = [int(round(v)) for v in values]
+    distinct_indices = list(range(n))
+    random.shuffle(distinct_indices)
+    for idx, i in enumerate(distinct_indices):
+        for j in distinct_indices[idx + 1:]:
+            if rounded[i] != rounded[j]:
+                # Random which gets named "first" so we don't always anchor
+                # on the same calendar day.
+                if random.random() < 0.5:
+                    i, j = j, i
+                return i, j, rounded[i], rounded[j]
+    return None
 
 
 def _day_label(date_str: str) -> str:
