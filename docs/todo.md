@@ -1,8 +1,10 @@
 # TODO
 
-Current product concern: the app is starting to show session intent and post-session fluency feedback, but the diagnosis vocabulary is still too coarse. A label like "three-digit minus two-digit, with borrow" is a generator bucket, not a satisfying weakness explanation. The next product step is to figure out the right diagnostic level before adding more review polish.
+Current product concern: the curriculum was just re-prioritized to a foundation lane (0-30 add/sub/mul/div) plus a 50/50 grounded lane (weather + money), see [curriculum-redesign.md](curriculum-redesign.md). The diagnostic-feature work below (feature tags like `sub.borrow.across_zero`) is **deferred until the foundation lane has produced clean data**. Bucketed labels like "three-digit minus two-digit" are no longer a live concern because the generators don't produce 3-digit operands anymore.
 
-## Tier 1 — Make Weaknesses Specific Enough To Be Believable
+## Tier 1 — Make Weaknesses Specific Enough To Be Believable (deferred)
+
+> Deferred: re-evaluate after a few weeks on the new foundation lane to see whether the existing fact-key granularity (`mul:7x8`, `add:2d+2d:c`, `div:7x8`) is already specific enough now that the operand ranges are tight. If gaps remain, then add the feature tags below.
 
 1. **Design diagnostic features instead of relying on broad skill buckets.** Addition/subtraction/percent attempts need interpretable feature tags that explain *why* a problem was hard, not just which generator bucket produced it. Examples to evaluate:
   - `sub.borrow.ones`
@@ -25,10 +27,7 @@ Current product concern: the app is starting to show session intent and post-ses
 
 ## Tier 4 — Curriculum and Problem Generation
 
-1. **Multiplication: add 3x3 through 9x9 as a distinct L1.5 tier.** Currently L1 is only x2, x5, x10 and L2 jumps straight to x6-x12. The hard table facts should be drillable as a focused set, not mixed in with x11 and x12.
-2. **Addition/subtraction buckets are probably too coarse.** This is now part of the diagnostic-feature work, not just a label-cleanup task. `2d+2d:c` and `3d-2d:b` cover too many different mental routines.
-3. **Percent drills need more variety.** The percentage pool is small, and real-life tax/tip/discount problems include less friendly rates and bases.
-4. **Future feedback design: if/how to improve coaching.** Keep mid-drill LLM feedback out of scope. If feedback returns, it should be post-session or stubborn-pattern only, grounded in stored diagnostic evidence with explicit privacy/redaction rules.
+see curriculum-redesign.md
 
 ## Tier 5 — Data Pipeline and Adaptation
 
@@ -38,14 +37,7 @@ Current product concern: the app is starting to show session intent and post-ses
 ## Tier 6 — Grounded/Real-Life Problems
 
 1. **Pull from calendar for time-math problems.** Calendar can be one authentic grounding source, but it should not become the whole grounding strategy.
-2. **Add CSV/manual expense grounding before direct finance integrations.** Let the user provide Chase Sapphire, Simplifi, or other finance exports as local CSV files; also support a manually maintained recurring-numbers file for rent, subscriptions, commute time, usual meal costs, budgets, and savings targets.
-3. **Expense-grounded generators should be source-native.** Use real transaction/category/budget data for tip, tax, discount, split, total, and budget-delta drills. Do not wrap arbitrary weak facts in fake personal scenarios.
-4. **Context requires new skills.** Time arithmetic, money arithmetic, unit conversion, and similar grounded skills need their own generators, tolerances, fact keys, and diagnostic features.
-
-## Tier 7 — Infrastructure
-
-1. **Debug panel takes up half the screen.** Make it collapsible or hidden by default.
-2. **Mobile/tablet support.** The current grid layout assumes a wide screen with a debug pane.
-3. **Data export.** The SQLite DB is the only record. A JSON export of attempts would be useful for analysis outside the app.
-4. **Multiple devices / sync.** Currently localhost-only with a local SQLite file. If practice happens from multiple machines, data does not follow.
+2. ~~Add CSV/manual expense grounding before direct finance integrations.~~ Done — `data/transactions.csv` drives `money_arithmetic` (charge_total, category_difference, category_share).
+3. ~~Expense-grounded generators should be source-native.~~ Done as part of #2.
+4. **Context requires new skills.** Time arithmetic and unit conversion still need their own generators, tolerances, and fact keys. Money + weather are now wired up; calendar/time arithmetic is the next grounded surface to add.
 
