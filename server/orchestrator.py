@@ -146,6 +146,44 @@ class Orchestrator:
         session = self.storage.get_session(sid)
         if not session:
             raise ValueError(f"unknown session: {sid}")
+
+        meta = self._sessions.setdefault(sid, {})
+        peek = meta.pop("peek", None)
+        if peek:
+            self._active[sid] = peek["active_state"]
+            self.bus.emit("orchestrator.peek_consumed", session_id=sid)
+            return peek["payload"]
+
+        produced = self._produce_question(sid, session)
+        self._active[sid] = produced["active_state"]
+        return produced["payload"]
+
+    def peek_next_question(self, sid: str) -> dict | None:
+        """Pre-generate the next question and stash it. Returns the same
+        payload `next_question` would return; safe to call repeatedly. No-op
+        when there's still an active question pending submission, when the
+        session has ended, or when the session has already hit its target.
+        """
+        session = self.storage.get_session(sid)
+        if not session or session.get("ended_at"):
+            return None
+        if sid in self._active:
+            return None
+        if sid not in self._sessions:
+            return None
+        meta = self._sessions[sid]
+        target = meta.get("target") or 0
+        position = self.storage.session_attempt_count(sid) + 1
+        if target and position > target:
+            return None
+        if meta.get("peek"):
+            return meta["peek"]["payload"]
+        produced = self._produce_question(sid, session, peek=True)
+        meta["peek"] = produced
+        self.bus.emit("orchestrator.peek_built", session_id=sid)
+        return produced["payload"]
+
+    def _produce_question(self, sid: str, session: dict, peek: bool = False) -> dict:
         user_id = session["user_id"]
         mode = session["mode"]
         position = self.storage.session_attempt_count(sid) + 1
@@ -189,12 +227,13 @@ class Orchestrator:
             prompt=problem["prompt"],
             expected=problem["expected"],
             parameters=problem["parameters"],
+            peek=peek,
         )
 
         audio = tts.synthesize(problem["prompt"], self.bus.emit)
 
         qid = uuid.uuid4().hex
-        self._active[sid] = {
+        active_state = {
             "qid": qid,
             "user_id": user_id,
             "mode": mode,
@@ -205,8 +244,7 @@ class Orchestrator:
             "audio_duration_ms": audio["duration_ms"],
             "position": position,
         }
-
-        return {
+        payload = {
             "qid": qid,
             "prompt_text": problem["prompt"],
             "audio_url": f"/audio/{audio['filename']}",
@@ -216,6 +254,7 @@ class Orchestrator:
             "target_questions": target,
             "mode": mode,
         }
+        return {"active_state": active_state, "payload": payload}
 
     def submit_answer(
         self,

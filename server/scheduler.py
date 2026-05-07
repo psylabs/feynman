@@ -88,23 +88,31 @@ def pick_drill(
     }
 
 
+FOUNDATION_SKILLS = {"addition", "subtraction", "multiplication", "division"}
+GROUNDED_SKILLS = {"money_arithmetic", "weather_math"}
+
+
 def build_session_plan(
     storage,
     user_id: str,
     length: int,
     emit: Callable,
 ) -> list[dict]:
-    """Pre-compute a coherent session: 2–3 theme facts repeated, plus related
-    and retention picks.
+    """Pre-compute a coherent session with the foundation/grounded split.
+
+    Allocation: ~50% grounded (money + weather), the rest foundation theme
+    facts plus retention. Foundation themes are picked from `drill_priorities`
+    filtered to foundation skills.
 
     Returns a list of slot dicts in playback order (same shape as `pick_drill`
-    plus `fact_key` and `role`). Empty list = not enough data; caller should
-    fall back to live `pick_drill` per question.
+    plus `fact_key` and `role`). Empty list = cold start; caller should fall
+    back to live `pick_drill` per question.
     """
     attempts = storage.all_attempts_for_user(user_id, limit=300)
     fact_stats = diagnosis.compute_fact_stats(attempts)
     skill_targets = {}
-    for sid in storage.all_skill_ids():
+    available_skills = set(storage.all_skill_ids())
+    for sid in available_skills:
         skill = storage.get_skill(sid)
         if skill:
             skill_targets[sid] = skill["target_latency_ms"]
@@ -114,68 +122,88 @@ def build_session_plan(
         fact_stats, skill_targets, min_attempts=2, limit=20,
         regression_keys=reg_keys,
     )
-    if not priorities:
-        emit("scheduler.session_plan", themes=[], slots=[], note="cold start")
-        return []
-
-    requested_themes = max(1, min(3, length // 4))
-    themes = _select_diverse_themes(priorities, requested_themes)
-    num_themes = len(themes)
 
     retention_pool = diagnosis.mastered_for_retention(fact_stats, skill_targets)
-    retention_n = min(2, len(retention_pool), 1 if length >= 6 else 0) if length >= 6 else 0
-    if length >= 12 and len(retention_pool) >= 2:
-        retention_n = 2
+    grounded_n = length // 2
+    retention_target = 2 if length >= 12 else (1 if length >= 8 else 0)
+    retention_n = min(retention_target, len(retention_pool))
+    foundation_n = max(1, length - grounded_n - retention_n)
 
-    exploration = _exploration_pick(storage, user_id, skill_targets, themes)
-    exploration_n = 1 if exploration and length >= 5 else 0
+    foundation_priorities = [p for p in priorities if p["skill_id"] in FOUNDATION_SKILLS]
+    if not foundation_priorities and not priorities:
+        # Cold start. Live pick_drill handles per-question fallback; we still
+        # seed grounded slots if any grounded skills exist so the user gets
+        # the 50/50 mix from day one.
+        grounded_slots = _build_grounded_slots(storage, user_id, available_skills, grounded_n, skill_targets)
+        if not grounded_slots:
+            emit("scheduler.session_plan", themes=[], slots=[], note="cold start")
+            return []
+        emit(
+            "scheduler.session_plan",
+            length=length,
+            themes=[],
+            grounded_count=len(grounded_slots),
+            note="cold start; grounded-only seed",
+            slots=[{"fact": s["fact_key"], "role": s["role"]} for s in grounded_slots],
+        )
+        return _spread_duplicates_with_alternation(grounded_slots)
 
-    related_n = 1 if length >= 5 else 0
-    if length >= 10:
-        related_n = 2
-    if exploration_n and length <= 5:
-        related_n = 0
+    requested_themes = max(1, min(3, foundation_n // 2 or 1))
+    theme_pool = foundation_priorities or priorities
+    themes = _select_diverse_themes(theme_pool, requested_themes)
+    num_themes = len(themes) or 1
 
-    theme_total = max(0, length - retention_n - related_n - exploration_n)
+    related_target = 1 if foundation_n >= 5 else 0
+    related_slots: list[dict] = []
+    for i in range(related_target):
+        theme = themes[i % num_themes]
+        rel_key = _pick_related(theme["fact_key"])
+        if not rel_key:
+            continue
+        rel_skill = _skill_from_key(rel_key) or theme["skill_id"]
+        related_slots.append(_slot_from_key(
+            rel_key, rel_skill, "related",
+            target_ms=skill_targets.get(rel_skill),
+            reason=f"related to {theme['display']}",
+        ))
+
+    theme_total = max(0, foundation_n - len(related_slots))
     base_reps = theme_total // num_themes
     extra = theme_total % num_themes
 
-    slots: list[dict] = []
+    foundation_slots: list[dict] = []
     for i, t in enumerate(themes):
         reps = base_reps + (1 if i < extra else 0)
         for _ in range(reps):
-            slots.append(_slot_from_key(t["fact_key"], t["skill_id"], "theme",
-                                         display=t["display"],
-                                         reason=f"slow: {t['display']} ({t['median_latency_ms']}ms, target {t['target_ms']}ms)",
-                                         target_ms=t["target_ms"],
-                                         diagnosis_median_latency_ms=t["median_latency_ms"],
-                                         diagnosis_accuracy=t["accuracy"],
-                                         diagnosis_n=t["n"],
-                                         diagnosis_gap_ratio=t["gap_ratio"]))
+            foundation_slots.append(_slot_from_key(
+                t["fact_key"], t["skill_id"], "theme",
+                display=t["display"],
+                reason=f"slow: {t['display']} ({t['median_latency_ms']}ms, target {t['target_ms']}ms)",
+                target_ms=t["target_ms"],
+                diagnosis_median_latency_ms=t["median_latency_ms"],
+                diagnosis_accuracy=t["accuracy"],
+                diagnosis_n=t["n"],
+                diagnosis_gap_ratio=t["gap_ratio"],
+            ))
+    foundation_slots.extend(related_slots)
 
-    for i in range(related_n):
-        theme = themes[i % num_themes]
-        rel_key = _pick_related(theme["fact_key"])
-        if rel_key:
-            slots.append(_slot_from_key(rel_key, _skill_from_key(rel_key) or theme["skill_id"],
-                                         "related",
-                                         target_ms=skill_targets.get(_skill_from_key(rel_key) or theme["skill_id"]),
-                                         reason=f"related to {theme['display']}"))
+    grounded_slots = _build_grounded_slots(storage, user_id, available_skills, grounded_n, skill_targets)
 
+    retention_slots: list[dict] = []
     for i in range(retention_n):
         m = retention_pool[i]
-        slots.append(_slot_from_key(m["fact_key"], m["skill_id"], "retention",
-                                     display=m["display"],
-                                     target_ms=m.get("target_ms"),
-                                     diagnosis_median_latency_ms=m.get("median_latency_ms"),
-                                     diagnosis_accuracy=m.get("accuracy"),
-                                     diagnosis_n=m.get("n"),
-                                     reason=f"retention check: {m['display']} (last seen {m['days_since_seen']}d ago)"))
+        retention_slots.append(_slot_from_key(
+            m["fact_key"], m["skill_id"], "retention",
+            display=m["display"],
+            target_ms=m.get("target_ms"),
+            diagnosis_median_latency_ms=m.get("median_latency_ms"),
+            diagnosis_accuracy=m.get("accuracy"),
+            diagnosis_n=m.get("n"),
+            reason=f"retention check: {m['display']} (last seen {m['days_since_seen']}d ago)",
+        ))
 
-    if exploration_n and exploration:
-        slots.append(exploration)
-
-    slots = _spread_duplicates(slots)
+    slots = foundation_slots + grounded_slots + retention_slots
+    slots = _spread_duplicates_with_alternation(slots)
 
     emit(
         "scheduler.session_plan",
@@ -185,9 +213,10 @@ def build_session_plan(
              "priority": t["priority"], "regressed": t.get("regressed", False)}
             for t in themes
         ],
-        retention_count=retention_n,
-        related_count=related_n,
-        exploration_count=exploration_n,
+        retention_count=len(retention_slots),
+        related_count=len(related_slots),
+        grounded_count=len(grounded_slots),
+        foundation_count=len(foundation_slots),
         slots=[{"fact": s["fact_key"], "role": s["role"]} for s in slots],
     )
     return slots
@@ -220,45 +249,46 @@ def _select_diverse_themes(priorities: list[dict], n: int) -> list[dict]:
     return chosen
 
 
-def _exploration_pick(storage, user_id: str, skill_targets: dict, themes: list[dict]) -> dict | None:
-    """Return one low-sample skill slot so new skills enter real drills."""
-    theme_skills = {t["skill_id"] for t in themes}
-    candidates = []
-    for sid in storage.all_skill_ids():
-        if sid in theme_skills:
-            continue
-        count = storage.skill_attempt_count(user_id, sid)
-        if count < 2:
-            candidates.append((count, sid))
-    if not candidates:
-        return None
-
-    count, skill_id = sorted(candidates)[0]
-    fact_key = _exploration_fact_key(skill_id)
-    return {
-        "skill_id": skill_id,
-        "target_fact": _fact_key_to_target(fact_key) if fact_key else None,
-        "level": 1,
-        "fact_key": fact_key or skill_id,
-        "display": diagnosis.fact_display(fact_key) if fact_key else skill_id,
-        "role": "exploration",
-        "reason": f"explore under-sampled skill: {skill_id}",
-        "target_ms": skill_targets.get(skill_id),
-        "diagnosis_median_latency_ms": None,
-        "diagnosis_accuracy": None,
-        "diagnosis_n": count,
-        "diagnosis_gap_ratio": None,
-    }
+_GROUNDED_OPS = {
+    "money_arithmetic": ("charge_total", "category_difference", "category_share"),
+    "weather_math": ("temp_delta", "daily_range", "f_to_c_approx", "wind_delta"),
+}
 
 
-def _exploration_fact_key(skill_id: str) -> str | None:
-    if skill_id == "money_arithmetic":
-        return random.choice([
-            "money:charge_total",
-            "money:category_difference",
-            "money:category_share",
-        ])
-    return None
+def _build_grounded_slots(
+    storage,
+    user_id: str,
+    available_skills: set[str],
+    n: int,
+    skill_targets: dict,
+) -> list[dict]:
+    """Return up to `n` grounded slots split between weather and money,
+    weighted toward whichever skill is more under-sampled by the user."""
+    if n <= 0:
+        return []
+    grounded = [s for s in GROUNDED_SKILLS if s in available_skills]
+    if not grounded:
+        return []
+    counts = {sid: storage.skill_attempt_count(user_id, sid) for sid in grounded}
+    slots: list[dict] = []
+    for _ in range(n):
+        sid = min(counts, key=lambda s: counts[s])
+        op = random.choice(_GROUNDED_OPS.get(sid, ("",)))
+        prefix = _GROUNDED_PREFIX.get(sid, sid)
+        fact_key = f"{prefix}:{op}" if op else sid
+        slots.append(_slot_from_key(
+            fact_key, sid, "grounded",
+            target_ms=skill_targets.get(sid),
+            reason=f"grounded: {sid.replace('_', ' ')}",
+        ))
+        counts[sid] += 1
+    return slots
+
+
+_GROUNDED_PREFIX = {
+    "money_arithmetic": "money",
+    "weather_math": "weather",
+}
 
 
 def _slot_from_key(
@@ -292,12 +322,18 @@ def _slot_from_key(
 def _skill_from_key(key: str) -> str | None:
     if key.startswith("mul:"):
         return "multiplication"
+    if key.startswith("div:"):
+        return "division"
     if key.startswith("add:"):
         return "addition"
     if key.startswith("sub:"):
         return "subtraction"
     if key.startswith("pct:"):
         return "percent_of"
+    if key.startswith("money:"):
+        return "money_arithmetic"
+    if key.startswith("weather:"):
+        return "weather_math"
     return None
 
 
@@ -323,12 +359,30 @@ def _related_keys(key: str) -> list[str]:
             if k != key and k not in out:
                 out.append(k)
         return out
+    if key.startswith("div:"):
+        try:
+            a, b = (int(x) for x in key[4:].split("x"))
+        except ValueError:
+            return []
+        out = []
+        for x, y in [(a, a), (b, b), (a, b + 1), (a, max(2, b - 1)),
+                     (a + 1, b), (max(2, a - 1), b)]:
+            if not (2 <= x <= 12 and 2 <= y <= 12):
+                continue
+            lo, hi = sorted([x, y])
+            k = f"div:{lo}x{hi}"
+            if k != key and k not in out:
+                out.append(k)
+        return out
     if key.startswith("add:") or key.startswith("sub:"):
         prefix = key[:4]
         rest = key[4:]
         try:
             pattern, tag = rest.rsplit(":", 1)
         except ValueError:
+            return []
+        # Skip 3d patterns — old data may still surface them but we don't drill there anymore
+        if "3d" in pattern:
             return []
         carry_tag = "c" if prefix == "add:" else "b"
         flipped = "n" if tag in ("c", "b") else carry_tag
@@ -362,6 +416,40 @@ def _spread_duplicates(slots: list[dict]) -> list[dict]:
                 shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
                 break
     return shuffled
+
+
+def _spread_duplicates_with_alternation(slots: list[dict]) -> list[dict]:
+    """Spread duplicates and try to break up adjacent grounded slots.
+
+    Two passes: first dedupe by fact_key (existing behavior), then walk the
+    list and swap any adjacent grounded pair with the nearest non-grounded
+    slot. Cheap heuristic; not guaranteed alternation when grounded slots
+    outnumber non-grounded.
+    """
+    out = _spread_duplicates(slots)
+    for _ in range(4):
+        bad = [i for i in range(1, len(out))
+               if out[i].get("role") == "grounded" and out[i - 1].get("role") == "grounded"]
+        if not bad:
+            break
+        moved = False
+        for i in bad:
+            for j in range(len(out)):
+                if j in (i - 1, i):
+                    continue
+                if out[j].get("role") == "grounded":
+                    continue
+                # Avoid swapping into a position that creates a new grounded-pair
+                if j > 0 and out[j - 1].get("role") == "grounded" and j != i + 1:
+                    continue
+                out[i], out[j] = out[j], out[i]
+                moved = True
+                break
+            if moved:
+                break
+        if not moved:
+            break
+    return out
 
 
 def _cold_start_pick(storage, user_id: str, emit: Callable) -> dict:
@@ -421,6 +509,17 @@ def _fact_key_to_target(key: str) -> dict | None:
             if random.random() < 0.5:
                 a, b = b, a
             return {"a": a, "b": b}
+    if key.startswith("div:"):
+        parts = key[4:].split("x")
+        if len(parts) == 2:
+            lo, hi = int(parts[0]), int(parts[1])
+            # Two divisions share this family: (lo*hi)/lo and (lo*hi)/hi.
+            # Pick either with equal probability.
+            if random.random() < 0.5:
+                divisor = lo
+            else:
+                divisor = hi
+            return {"a": lo * hi, "b": divisor}
     # For add/sub/pct patterns, the generator handles the randomness
     # within the pattern. We pass hints.
     if key.startswith("add:") or key.startswith("sub:"):
@@ -430,6 +529,8 @@ def _fact_key_to_target(key: str) -> dict | None:
         return {"percentage": pct}
     if key.startswith("money:"):
         return {"operation": key[6:]}
+    if key.startswith("weather:"):
+        return {"operation": key[8:]}
     return None
 
 
@@ -452,16 +553,26 @@ def _infer_level_from_key(key: str) -> int:
     if key.startswith("mul:"):
         parts = key[4:].split("x")
         a, b = int(parts[0]), int(parts[1])
-        if a <= 5 or b <= 5 or a == 10 or b == 10:
+        if a in (2, 5, 10, 11) or b in (2, 5, 10, 11):
             return 1
-        if a <= 12 and b <= 12:
-            return 2
-        return 3
-    if key.startswith("add:") or key.startswith("sub:"):
-        # Count total digits involved
-        rest = key[4:] if key.startswith("add:") else key[4:]
-        if "3d" in rest:
+        if a in (12, 15, 20) or b in (12, 15, 20):
             return 3
+        return 2
+    if key.startswith("div:"):
+        parts = key[4:].split("x")
+        a, b = int(parts[0]), int(parts[1])
+        # Mirror the multiplication tiering: ÷2/5/10 = L1, ÷12/15/20 = L3, rest L2
+        if a in (2, 5, 10) or b in (2, 5, 10):
+            return 1
+        if a in (11, 12, 15, 20) or b in (11, 12, 15, 20):
+            return 3
+        return 2
+    if key.startswith("add:") or key.startswith("sub:"):
+        # Foundation lane caps everything to L1/L2; treat 3d (legacy) as L2 so
+        # the generator's degraded 2d path runs.
+        rest = key[4:]
+        if "3d" in rest:
+            return 2
         pattern, tag = rest.rsplit(":", 1)
         if tag in ("c", "b"):
             return 2
@@ -473,4 +584,8 @@ def _infer_level_from_key(key: str) -> int:
         if pct in (15, 25):
             return 2
         return 3
+    if key.startswith("weather:"):
+        return 1
+    if key.startswith("money:"):
+        return 2
     return 2

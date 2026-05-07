@@ -6,21 +6,30 @@ from server import session_analysis
 class SessionAnalysisTests(unittest.TestCase):
     def test_plan_summary_names_focus_and_mix(self):
         slots = [
-            {"role": "theme", "fact_key": "mul:7x8", "display": "7 x 8"},
-            {"role": "theme", "fact_key": "mul:7x8", "display": "7 x 8"},
-            {"role": "theme", "fact_key": "add:2d+2d:c", "display": "Two-digit + two-digit, with carry"},
-            {"role": "related", "fact_key": "mul:7x7", "display": "7 x 7"},
-            {"role": "retention", "fact_key": "mul:5x9", "display": "5 x 9"},
-            {"role": "exploration", "fact_key": "money:charge_total", "display": "Money: charge total"},
+            {"role": "theme", "skill_id": "multiplication", "fact_key": "mul:7x8", "display": "7 x 8"},
+            {"role": "theme", "skill_id": "multiplication", "fact_key": "mul:7x8", "display": "7 x 8"},
+            {"role": "theme", "skill_id": "addition", "fact_key": "add:2d+2d:c", "display": "Two-digit + two-digit, with carry"},
+            {"role": "related", "skill_id": "multiplication", "fact_key": "mul:7x7", "display": "7 x 7"},
+            {"role": "retention", "skill_id": "multiplication", "fact_key": "mul:5x9", "display": "5 x 9"},
+            {"role": "grounded", "skill_id": "weather_math", "fact_key": "weather:temp_delta", "display": "Weather: temp delta"},
+            {"role": "grounded", "skill_id": "money_arithmetic", "fact_key": "money:charge_total", "display": "Money: charge total"},
         ]
 
         summary = session_analysis.plan_summary(slots)
 
         self.assertEqual(summary["focus"], ["7 x 8", "Two-digit + two-digit, with carry"])
-        self.assertEqual(summary["counts"], {"theme": 3, "related": 1, "retention": 1, "exploration": 1})
+        self.assertEqual(
+            summary["counts"],
+            {"theme": 3, "related": 1, "retention": 1, "grounded": 2, "exploration": 0},
+        )
+        self.assertEqual(
+            summary["grounded_skills"],
+            ["money_arithmetic", "weather_math"],
+        )
         self.assertIn("7 x 8", summary["intent"])
+        self.assertIn("real-life drills", summary["intent"])
         self.assertIn("3 focused", summary["mix"])
-        self.assertIn("1 exploration", summary["mix"])
+        self.assertIn("2 real-life", summary["mix"])
 
     def test_review_analysis_compares_attempts_to_planned_roles(self):
         slots = [

@@ -30,6 +30,18 @@ def fact_key(skill_id: str, parameters: dict) -> str | None:
         lo, hi = sorted([int(a), int(b)])
         return f"mul:{lo}x{hi}"
 
+    if skill_id == "division":
+        # a / b: the family is the (b, a/b) factor pair — 56/7 and 56/8 share key div:7x8
+        a, b = parameters.get("a"), parameters.get("b")
+        if a is None or b is None or int(b) == 0:
+            return None
+        a_i, b_i = int(a), int(b)
+        if a_i % b_i != 0:
+            return None
+        q = a_i // b_i
+        lo, hi = sorted([b_i, q])
+        return f"div:{lo}x{hi}"
+
     if skill_id == "addition":
         a, b = parameters.get("a"), parameters.get("b")
         if a is None or b is None:
@@ -60,6 +72,12 @@ def fact_key(skill_id: str, parameters: dict) -> str | None:
         if not operation:
             return None
         return f"money:{operation}"
+
+    if skill_id == "weather_math":
+        operation = parameters.get("operation")
+        if not operation:
+            return None
+        return f"weather:{operation}"
 
     return None
 
@@ -96,6 +114,13 @@ def fact_display(key: str) -> str:
     if key.startswith("mul:"):
         parts = key[4:].split("x")
         return f"{parts[0]} x {parts[1]}"
+    if key.startswith("div:"):
+        parts = key[4:].split("x")
+        try:
+            lo, hi = int(parts[0]), int(parts[1])
+            return f"{lo * hi} ÷ {lo} (and ÷ {hi})"
+        except (ValueError, IndexError):
+            return key
     if key.startswith("add:"):
         rest = key[4:]
         pattern, tag = rest.rsplit(":", 1)
@@ -112,6 +137,8 @@ def fact_display(key: str) -> str:
         return f"{key[4:]}%"
     if key.startswith("money:"):
         return "Money: " + key[6:].replace("_", " ")
+    if key.startswith("weather:"):
+        return "Weather: " + key[8:].replace("_", " ")
     return key
 
 
@@ -132,15 +159,19 @@ def confidence_band(n: int) -> str:
 
 
 def factor_family_stats(fact_stats: dict[str, dict]) -> list[dict]:
-    """Roll up multiplication facts by factor family (×7 facts, ×8 facts, …).
+    """Roll up multiplication and division facts by factor family.
 
-    A fact like mul:6x7 contributes to BOTH the ×6 and ×7 families. Single-
-    factor facts (like 7×7) contribute once. Returns a list sorted by median
-    latency descending so families that need the most work surface first.
+    A mul:6x7 contributes to both ×6 and ×7 families; div:6x7 contributes to
+    ÷6 and ÷7. Returned rows are tagged by op so the profile can show
+    multiplication and division families side-by-side.
     """
-    by_factor: dict[int, dict] = {}
+    by_family: dict[tuple[str, int], dict] = {}
     for key, s in fact_stats.items():
-        if not key.startswith("mul:"):
+        if key.startswith("mul:"):
+            op = "mul"
+        elif key.startswith("div:"):
+            op = "div"
+        else:
             continue
         try:
             a_str, b_str = key[4:].split("x")
@@ -148,18 +179,20 @@ def factor_family_stats(fact_stats: dict[str, dict]) -> list[dict]:
         except (ValueError, IndexError):
             continue
         for f in {a, b}:
-            row = by_factor.setdefault(f, {"factor": f, "n": 0, "correct": 0, "lats": []})
+            row = by_family.setdefault((op, f), {"op": op, "factor": f, "n": 0, "correct": 0, "lats": []})
             row["n"] += s["n"]
             row["correct"] += s["correct"]
             row["lats"].extend(s.get("latencies") or [])
 
     out = []
-    for f, row in by_factor.items():
+    for (op, f), row in by_family.items():
         lats = row["lats"]
         med = int(statistics.median(lats)) if lats else None
+        symbol = "×" if op == "mul" else "÷"
         out.append({
+            "op": op,
             "factor": f,
-            "display": f"×{f} facts",
+            "display": f"{symbol}{f} facts",
             "n": row["n"],
             "accuracy": round(row["correct"] / row["n"], 3) if row["n"] else 0,
             "median_latency_ms": med,

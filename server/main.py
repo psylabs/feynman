@@ -168,6 +168,24 @@ async def session_next(payload: dict):
     return await asyncio.to_thread(orch.next_question, sid)
 
 
+@app.post("/session/peek")
+async def session_peek(payload: dict):
+    """Pre-generate the next question so the next /session/next is instant.
+
+    Safe to call after /session/submit returns; the response is exactly what
+    /session/next would have returned. Returns {"peeked": false} when the
+    session has no question to pre-generate (ended, target reached, or a
+    question is already pending).
+    """
+    sid = payload.get("session_id")
+    if not sid:
+        raise HTTPException(400, "session_id required")
+    result = await asyncio.to_thread(orch.peek_next_question, sid)
+    if result is None:
+        return {"peeked": False}
+    return {"peeked": True, **result}
+
+
 @app.post("/session/submit")
 async def session_submit(
     background_tasks: BackgroundTasks,
@@ -270,7 +288,9 @@ app.mount("/", NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="stat
 def main():
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
+    host = os.environ.get("FEYNMAN_HOST", "0.0.0.0")
+    port = int(os.environ.get("FEYNMAN_PORT", "8765"))
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

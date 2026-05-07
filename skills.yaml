@@ -1,35 +1,46 @@
 - id: addition
   parent: arithmetic
-  display_name: Addition
-  target_latency_ms: 5000
+  display_name: Addition (0-20)
+  target_latency_ms: 3000
   tolerance:
     type: exact
   parameter_schema:
-    digit_range: [1, 3]
+    operand_range: [0, 20]
   templates:
     - "What is {a} plus {b}?"
 
 - id: subtraction
   parent: arithmetic
-  display_name: Subtraction
-  target_latency_ms: 5000
+  display_name: Subtraction (0-30)
+  target_latency_ms: 3500
   tolerance:
     type: exact
   parameter_schema:
-    operand_range: [10, 99]
+    operand_range: [0, 30]
   templates:
     - "What is {a} minus {b}?"
 
 - id: multiplication
   parent: arithmetic
-  display_name: Multiplication
-  target_latency_ms: 6000
+  display_name: Multiplication facts
+  target_latency_ms: 4000
   tolerance:
     type: exact
   parameter_schema:
-    factor_range: [2, 12]
+    factor_range: [1, 20]
   templates:
     - "What is {a} times {b}?"
+
+- id: division
+  parent: arithmetic
+  display_name: Division facts
+  target_latency_ms: 4500
+  tolerance:
+    type: exact
+  parameter_schema:
+    divisors: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20]
+  templates:
+    - "What is {a} divided by {b}?"
 
 - id: percent_of
   parent: percentages
@@ -52,3 +63,14 @@
     operations: [charge_total, category_difference, category_share]
   templates:
     - "Use transaction data to answer this money question."
+
+- id: weather_math
+  parent: grounded
+  display_name: Weather math
+  target_latency_ms: 9000
+  tolerance:
+    type: exact
+  parameter_schema:
+    operations: [temp_delta, daily_range, f_to_c_approx, wind_delta]
+  templates:
+    - "Use weather data to answer this question."

@@ -10,6 +10,7 @@ ROLE_LABELS = {
     "theme": "focused",
     "related": "related",
     "retention": "retention",
+    "grounded": "real-life",
     "exploration": "exploration",
 }
 
@@ -23,10 +24,14 @@ def plan_summary(slots: list[dict]) -> dict:
         if s.get("role") == "theme"
     )
     focus = [name for name, _ in focus_counts.most_common(3)]
+    grounded_skills = sorted({
+        s.get("skill_id") for s in slots if s.get("role") == "grounded"
+    } - {None})
     return {
         "focus": focus,
         "counts": counts,
-        "intent": _intent_sentence(focus),
+        "grounded_skills": grounded_skills,
+        "intent": _intent_sentence(focus, counts.get("grounded", 0), grounded_skills),
         "mix": _mix_sentence(counts),
     }
 
@@ -128,17 +133,38 @@ def _display_for_slot(slot: dict) -> str:
     return slot.get("display") or slot.get("fact_key") or "this focus"
 
 
-def _intent_sentence(focus: list[str]) -> str:
+_GROUNDED_LABEL = {
+    "money_arithmetic": "spending",
+    "weather_math": "weather",
+}
+
+
+def _intent_sentence(focus: list[str], grounded_count: int = 0, grounded_skills: list[str] | None = None) -> str:
+    grounded_skills = grounded_skills or []
+    grounded_phrase = ""
+    if grounded_count:
+        labels = [_GROUNDED_LABEL.get(s, s.replace("_", " ")) for s in grounded_skills]
+        if len(labels) == 1:
+            source = labels[0]
+        elif len(labels) == 2:
+            source = f"{labels[0]} and {labels[1]}"
+        else:
+            source = ", ".join(labels[:-1]) + f", and {labels[-1]}"
+        grounded_phrase = f" Plus {grounded_count} real-life drills from your {source}." if focus \
+            else f"This session is {grounded_count} real-life drills from your {source}."
+
     if not focus:
+        if grounded_phrase:
+            return grounded_phrase.strip()
         return "This session is exploratory while the system gathers enough data."
     if len(focus) == 1:
-        return f"This session is mainly drilling {focus[0]}."
-    return f"This session is mainly drilling {', '.join(focus[:-1])}, and {focus[-1]}."
+        return f"This session is mainly drilling {focus[0]}.{grounded_phrase}"
+    return f"This session is mainly drilling {', '.join(focus[:-1])}, and {focus[-1]}.{grounded_phrase}"
 
 
 def _mix_sentence(counts: dict[str, int]) -> str:
     parts = []
-    for role in ("theme", "related", "retention", "exploration"):
+    for role in ("theme", "related", "grounded", "retention", "exploration"):
         n = counts.get(role, 0)
         if n:
             parts.append(f"{n} {ROLE_LABELS[role]}")
