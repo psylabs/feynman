@@ -138,6 +138,12 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
   margin: 24px 0 16px 0;
   background: #1c1e22;
   border-color: #353841;
+  /* Block the browser's default touch behaviors so press-and-hold doesn't
+     scroll, zoom, or open the long-press menu on Android. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 #btn-ptt:not(:disabled):active,
 #btn-ptt.recording {
@@ -145,6 +151,15 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
   border-color: #b91c1c;
   color: #fff;
 }
+
+/* Debug toggle button — small, circular */
+#btn-debug-toggle {
+  padding: 6px 10px;
+  font-size: 14px;
+  margin-right: 8px;
+}
+body.debug-collapsed aside#debug { display: none; }
+body.debug-collapsed { grid-template-columns: 1fr; grid-template-areas: "topbar" "main"; }
 
 #prompt {
   font-size: 30px;
@@ -478,3 +493,60 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .mark.correct { color: #22c55e; }
 .mark.wrong { color: #ef4444; }
 .mark.skipped { color: #888; }
+
+/* ---- mobile / narrow screens ---- */
+@media (max-width: 900px) {
+  body {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "topbar"
+      "main";
+    height: 100dvh;
+  }
+  main {
+    padding: 16px;
+    align-items: flex-start;
+    padding-top: 24px;
+  }
+  #topbar { padding: 0 10px; }
+  #topbar .brand { font-size: 11px; }
+  #navlinks { gap: 0; }
+  .navlink { padding: 6px 8px; font-size: 12px; }
+  .user-button { padding: 6px 10px; font-size: 12px; }
+
+  h1 { font-size: 22px; }
+  h2 { font-size: 18px; }
+
+  #prompt {
+    font-size: 22px;
+    padding: 24px 16px;
+    min-height: 96px;
+  }
+  #btn-ptt {
+    padding: 22px;
+    font-size: 16px;
+    margin: 16px 0 12px 0;
+  }
+  .actions.row { flex-wrap: wrap; }
+
+  /* Debug pane: hidden by default on narrow; opens as a full-screen overlay
+     when the user toggles it. */
+  aside#debug { display: none; }
+  body:not(.debug-collapsed) aside#debug {
+    display: flex;
+    position: fixed;
+    top: 44px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    border-left: none;
+    border-top: 1px solid #25282e;
+  }
+
+  table { font-size: 12px; }
+  th, td { padding: 4px 6px; }
+
+  .summary { gap: 12px; font-size: 14px; }
+  .summary .stat .value { font-size: 16px; }
+}

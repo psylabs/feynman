@@ -206,6 +206,19 @@
 
   async function startRecording() {
     if (recording || $("btn-ptt").disabled || !currentQid) return;
+
+    // Mic requires a secure context. On HTTP-from-LAN, mediaDevices is
+    // undefined on Android Chrome / blocked on iOS Safari. Surface the
+    // actual reason instead of a generic "permission denied".
+    if (!window.isSecureContext) {
+      $("status").textContent = "Microphone needs HTTPS. Use Tailscale or open this on the Mac.";
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      $("status").textContent = "This browser doesn't expose a microphone here.";
+      return;
+    }
+
     recording = true;
     onsetTs = Date.now() / 1000;
     audioChunks = [];
@@ -214,8 +227,12 @@
 
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      $("status").textContent = "Microphone permission denied";
+    } catch (err) {
+      const name = err && err.name;
+      $("status").textContent =
+        name === "NotAllowedError" ? "Microphone permission denied — allow it in browser settings."
+        : name === "NotFoundError" ? "No microphone found."
+        : `Microphone error: ${name || "unknown"}`;
       recording = false;
       $("btn-ptt").classList.remove("recording");
       $("btn-ptt").textContent = "Press & hold to answer";
@@ -742,11 +759,22 @@
 
   // ---- input bindings ----------------------------------------------------
 
-  $("btn-ptt").addEventListener("mousedown", startRecording);
-  $("btn-ptt").addEventListener("mouseup", stopRecording);
-  $("btn-ptt").addEventListener("mouseleave", stopRecording);
-  $("btn-ptt").addEventListener("touchstart", (e) => { e.preventDefault(); startRecording(); });
-  $("btn-ptt").addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
+  // Pointer Events: works on touch, mouse, and pen consistently. Avoids the
+  // touchstart-preventDefault passive-listener trap on Android Chrome.
+  const ptt = $("btn-ptt");
+  ptt.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { ptt.setPointerCapture(e.pointerId); } catch {}
+    startRecording();
+  });
+  ptt.addEventListener("pointerup", (e) => {
+    e.preventDefault();
+    try { ptt.releasePointerCapture(e.pointerId); } catch {}
+    stopRecording();
+  });
+  ptt.addEventListener("pointercancel", () => stopRecording());
+  // Block the long-press context menu on Android.
+  ptt.addEventListener("contextmenu", (e) => e.preventDefault());
 
   let spaceDown = false;
   window.addEventListener("keydown", (e) => {
@@ -774,6 +802,19 @@
   document.querySelectorAll(".navlink").forEach((b) => {
     b.addEventListener("click", () => showScreen(b.dataset.screen));
   });
+
+  // Debug pane toggle (visible everywhere; collapses the right column on
+  // desktop, opens an overlay on mobile).
+  const dbgToggle = $("btn-debug-toggle");
+  if (dbgToggle) {
+    dbgToggle.addEventListener("click", () => {
+      document.body.classList.toggle("debug-collapsed");
+    });
+    // Default on narrow screens: debug collapsed.
+    if (window.matchMedia("(max-width: 900px)").matches) {
+      document.body.classList.add("debug-collapsed");
+    }
+  }
 
   refreshStartScreen();
 })();
