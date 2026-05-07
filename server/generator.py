@@ -10,7 +10,7 @@ Returns:
 
 import random
 
-from server import money
+from server import money, weather
 
 
 def mastery_to_level(mastery: float) -> int:
@@ -276,6 +276,12 @@ def _gen_money_arithmetic(level: int, target: dict | None = None) -> dict:
     return problem
 
 
+def _gen_weather_math(level: int, target: dict | None = None) -> dict:
+    problem = weather.generate_problem(target=target)
+    problem["parameters"]["level"] = level
+    return problem
+
+
 GENERATORS = {
     "addition": _gen_addition,
     "subtraction": _gen_subtraction,
@@ -283,6 +289,7 @@ GENERATORS = {
     "division": _gen_division,
     "percent_of": _gen_percent_of,
     "money_arithmetic": _gen_money_arithmetic,
+    "weather_math": _gen_weather_math,
 }
 
 
