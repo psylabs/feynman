@@ -292,9 +292,19 @@
     $("feedback").textContent = r.feedback_pending ? "thinking…" : "";
     $("btn-next").classList.remove("hidden");
 
+    // Prefetch the next question while the user reads this result.
+    // Fire-and-forget: failures fall back to the live /session/next path.
+    if (sessionId && r.position < r.target_questions) {
+      fetch("/session/peek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => {});
+    }
+
     if (advancing) return;
     advancing = true;
-    const delay = r.feedback_pending ? 5000 : 2000;
+    const delay = r.feedback_pending ? 5000 : (r.correct ? 600 : 2000);
     advanceTimer = setTimeout(advanceNow, delay);
   }
 

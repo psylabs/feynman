@@ -168,6 +168,24 @@ async def session_next(payload: dict):
     return await asyncio.to_thread(orch.next_question, sid)
 
 
+@app.post("/session/peek")
+async def session_peek(payload: dict):
+    """Pre-generate the next question so the next /session/next is instant.
+
+    Safe to call after /session/submit returns; the response is exactly what
+    /session/next would have returned. Returns {"peeked": false} when the
+    session has no question to pre-generate (ended, target reached, or a
+    question is already pending).
+    """
+    sid = payload.get("session_id")
+    if not sid:
+        raise HTTPException(400, "session_id required")
+    result = await asyncio.to_thread(orch.peek_next_question, sid)
+    if result is None:
+        return {"peeked": False}
+    return {"peeked": True, **result}
+
+
 @app.post("/session/submit")
 async def session_submit(
     background_tasks: BackgroundTasks,
