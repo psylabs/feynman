@@ -292,12 +292,18 @@ def _slot_from_key(
 def _skill_from_key(key: str) -> str | None:
     if key.startswith("mul:"):
         return "multiplication"
+    if key.startswith("div:"):
+        return "division"
     if key.startswith("add:"):
         return "addition"
     if key.startswith("sub:"):
         return "subtraction"
     if key.startswith("pct:"):
         return "percent_of"
+    if key.startswith("money:"):
+        return "money_arithmetic"
+    if key.startswith("weather:"):
+        return "weather_math"
     return None
 
 
@@ -323,12 +329,30 @@ def _related_keys(key: str) -> list[str]:
             if k != key and k not in out:
                 out.append(k)
         return out
+    if key.startswith("div:"):
+        try:
+            a, b = (int(x) for x in key[4:].split("x"))
+        except ValueError:
+            return []
+        out = []
+        for x, y in [(a, a), (b, b), (a, b + 1), (a, max(2, b - 1)),
+                     (a + 1, b), (max(2, a - 1), b)]:
+            if not (2 <= x <= 12 and 2 <= y <= 12):
+                continue
+            lo, hi = sorted([x, y])
+            k = f"div:{lo}x{hi}"
+            if k != key and k not in out:
+                out.append(k)
+        return out
     if key.startswith("add:") or key.startswith("sub:"):
         prefix = key[:4]
         rest = key[4:]
         try:
             pattern, tag = rest.rsplit(":", 1)
         except ValueError:
+            return []
+        # Skip 3d patterns — old data may still surface them but we don't drill there anymore
+        if "3d" in pattern:
             return []
         carry_tag = "c" if prefix == "add:" else "b"
         flipped = "n" if tag in ("c", "b") else carry_tag
@@ -421,6 +445,17 @@ def _fact_key_to_target(key: str) -> dict | None:
             if random.random() < 0.5:
                 a, b = b, a
             return {"a": a, "b": b}
+    if key.startswith("div:"):
+        parts = key[4:].split("x")
+        if len(parts) == 2:
+            lo, hi = int(parts[0]), int(parts[1])
+            # Two divisions share this family: (lo*hi)/lo and (lo*hi)/hi.
+            # Pick either with equal probability.
+            if random.random() < 0.5:
+                divisor = lo
+            else:
+                divisor = hi
+            return {"a": lo * hi, "b": divisor}
     # For add/sub/pct patterns, the generator handles the randomness
     # within the pattern. We pass hints.
     if key.startswith("add:") or key.startswith("sub:"):
@@ -430,6 +465,8 @@ def _fact_key_to_target(key: str) -> dict | None:
         return {"percentage": pct}
     if key.startswith("money:"):
         return {"operation": key[6:]}
+    if key.startswith("weather:"):
+        return {"operation": key[8:]}
     return None
 
 
@@ -452,16 +489,26 @@ def _infer_level_from_key(key: str) -> int:
     if key.startswith("mul:"):
         parts = key[4:].split("x")
         a, b = int(parts[0]), int(parts[1])
-        if a <= 5 or b <= 5 or a == 10 or b == 10:
+        if a in (2, 5, 10, 11) or b in (2, 5, 10, 11):
             return 1
-        if a <= 12 and b <= 12:
-            return 2
-        return 3
-    if key.startswith("add:") or key.startswith("sub:"):
-        # Count total digits involved
-        rest = key[4:] if key.startswith("add:") else key[4:]
-        if "3d" in rest:
+        if a in (12, 15, 20) or b in (12, 15, 20):
             return 3
+        return 2
+    if key.startswith("div:"):
+        parts = key[4:].split("x")
+        a, b = int(parts[0]), int(parts[1])
+        # Mirror the multiplication tiering: ÷2/5/10 = L1, ÷12/15/20 = L3, rest L2
+        if a in (2, 5, 10) or b in (2, 5, 10):
+            return 1
+        if a in (11, 12, 15, 20) or b in (11, 12, 15, 20):
+            return 3
+        return 2
+    if key.startswith("add:") or key.startswith("sub:"):
+        # Foundation lane caps everything to L1/L2; treat 3d (legacy) as L2 so
+        # the generator's degraded 2d path runs.
+        rest = key[4:]
+        if "3d" in rest:
+            return 2
         pattern, tag = rest.rsplit(":", 1)
         if tag in ("c", "b"):
             return 2
@@ -473,4 +520,8 @@ def _infer_level_from_key(key: str) -> int:
         if pct in (15, 25):
             return 2
         return 3
+    if key.startswith("weather:"):
+        return 1
+    if key.startswith("money:"):
+        return 2
     return 2
