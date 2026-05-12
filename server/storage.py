@@ -516,6 +516,69 @@ class Storage:
             )
         return out
 
+    def home_stats(self, user_id: str) -> dict:
+        """Fluency score and streak for the home screen."""
+        from datetime import date, timedelta
+
+        now = time.time()
+        day = 86400
+
+        def _median_latency(since: float, until: float) -> int | None:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT a.resolution_latency_ms
+                    FROM attempts a JOIN sessions s ON a.session_id = s.id
+                    WHERE s.user_id = ? AND a.correct = 1 AND a.skipped = 0
+                      AND a.resolution_latency_ms IS NOT NULL
+                      AND a.created_at >= ? AND a.created_at < ?
+                    ORDER BY a.resolution_latency_ms
+                    """,
+                    (user_id, since, until),
+                ).fetchall()
+            vals = sorted(r[0] for r in rows if r[0])
+            if not vals:
+                return None
+            mid = len(vals) // 2
+            return int(vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2)
+
+        current_ms = _median_latency(now - 14 * day, now)
+        prior_ms = _median_latency(now - 28 * day, now - 14 * day)
+        delta_ms = (current_ms - prior_ms) if (current_ms and prior_ms) else None
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT date(started_at, 'unixepoch', 'localtime') AS day
+                FROM sessions
+                WHERE user_id = ? AND ended_at IS NOT NULL
+                ORDER BY day DESC
+                """,
+                (user_id,),
+            ).fetchall()
+
+        days = [r["day"] for r in rows]
+        total_days = len(days)
+
+        today = date.today().isoformat()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        streak = 0
+        if days and days[0] in (today, yesterday):
+            check = date.fromisoformat(days[0])
+            for d in days:
+                if date.fromisoformat(d) == check:
+                    streak += 1
+                    check -= timedelta(days=1)
+                else:
+                    break
+
+        return {
+            "fluency_ms": current_ms,
+            "fluency_delta_ms": delta_ms,
+            "streak_current": streak,
+            "streak_total": total_days,
+        }
+
     def leaderboard_data(self) -> list[dict]:
         """Cross-user comparison. Per-user totals plus per-skill mastery."""
         users = self.list_users()

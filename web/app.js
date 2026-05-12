@@ -49,21 +49,12 @@
     const user = window.feynmanUser?.getCurrent?.();
     $("greeting").textContent = user ? `Hi, ${user.name}.` : "Hi.";
     $("diagnosis-teaser").classList.add("hidden");
+    $("home-stats").classList.add("hidden");
     if (!user) return;
     if (user.has_completed_eval) {
       $("eval-banner").classList.add("hidden");
-      $("btn-start-eval").textContent = "Re-do baseline";
-      $("btn-start-eval").classList.remove("primary");
-      $("btn-start-eval").classList.add("secondary");
-      $("btn-start-drill").classList.add("primary");
-      $("btn-start-drill").classList.remove("secondary");
     } else {
       $("eval-banner").classList.remove("hidden");
-      $("btn-start-eval").textContent = "Take baseline (20q)";
-      $("btn-start-eval").classList.add("primary");
-      $("btn-start-eval").classList.remove("secondary");
-      $("btn-start-drill").classList.remove("primary");
-      $("btn-start-drill").classList.add("secondary");
     }
     loadDiagnosisTeaser(user.id);
   }
@@ -72,11 +63,44 @@
     const el = $("diagnosis-teaser");
     try {
       const d = await fetch(`/diagnosis/${userId}`).then((r) => r.json());
+      renderHomeStats(d);
       el.innerHTML = renderTeaser(d);
       el.classList.remove("hidden");
     } catch {
       el.classList.add("hidden");
     }
+  }
+
+  function renderHomeStats(d) {
+    const el = $("home-stats");
+    const streak = d.streak_current ?? 0;
+    const total = d.streak_total ?? 0;
+    const fluency = d.fluency_ms;
+    const delta = d.fluency_delta_ms;
+    if (!total && !fluency) { el.classList.add("hidden"); return; }
+
+    let streakHtml = `<div class="stat-block">
+      <div class="stat-val">${streak > 0 ? `🔥 ${streak}` : total}</div>
+      <div class="stat-label">${streak > 0 ? `day streak · ${total} total` : "days practiced"}</div>
+    </div>`;
+
+    let fluencyHtml = "";
+    if (fluency) {
+      const sec = (fluency / 1000).toFixed(1);
+      let deltaHtml = "";
+      if (delta != null) {
+        const sign = delta < 0 ? "↓" : "↑";
+        const cls = delta < 0 ? "good" : "bad";
+        deltaHtml = `<span class="stat-delta ${cls}">${sign}${(Math.abs(delta)/1000).toFixed(1)}s</span>`;
+      }
+      fluencyHtml = `<div class="stat-block">
+        <div class="stat-val">${sec}s${deltaHtml}</div>
+        <div class="stat-label">median response · 14d</div>
+      </div>`;
+    }
+
+    el.innerHTML = streakHtml + fluencyHtml;
+    el.classList.remove("hidden");
   }
 
   function renderTeaser(d) {
@@ -136,13 +160,12 @@
 
   // ---- session lifecycle -------------------------------------------------
 
-  async function startSession(mode) {
+  async function startSession(mode, fixedLength) {
     const user = window.feynmanUser?.getCurrent?.();
     if (!user) return alert("Pick a player first.");
     const body = { user_id: user.id, mode };
     if (mode === "drill") {
-      const sel = $("drill-length");
-      const n = sel ? parseInt(sel.value, 10) : NaN;
+      const n = fixedLength ?? parseInt(($("drill-length") || {}).value, 10);
       if (Number.isFinite(n)) body.target_questions = n;
     }
     const r = await fetch("/session/start", {
@@ -207,15 +230,12 @@
   async function startRecording() {
     if (recording || $("btn-ptt").disabled || !currentQid) return;
 
-    // Mic requires a secure context. On HTTP-from-LAN, mediaDevices is
-    // undefined on Android Chrome / blocked on iOS Safari. Surface the
-    // actual reason instead of a generic "permission denied".
-    if (!window.isSecureContext) {
-      $("status").textContent = "Microphone needs HTTPS. Use Tailscale or open this on the Mac.";
-      return;
-    }
+    // mediaDevices is undefined on plain HTTP on most mobile browsers.
+    // The Chrome flag `unsafely-treat-insecure-origin-as-secure` makes
+    // getUserMedia work but leaves isSecureContext false — so check the API
+    // directly and let getUserMedia surface its own error.
     if (!navigator.mediaDevices?.getUserMedia) {
-      $("status").textContent = "This browser doesn't expose a microphone here.";
+      $("status").textContent = "Microphone needs HTTPS. Use Tailscale or open this on the Mac.";
       return;
     }
 
@@ -232,6 +252,7 @@
       $("status").textContent =
         name === "NotAllowedError" ? "Microphone permission denied — allow it in browser settings."
         : name === "NotFoundError" ? "No microphone found."
+        : (name === "SecurityError" || name === "NotSupportedError") ? "Microphone needs HTTPS. Use Tailscale or open this on the Mac."
         : `Microphone error: ${name || "unknown"}`;
       recording = false;
       $("btn-ptt").classList.remove("recording");
@@ -777,11 +798,17 @@
   ptt.addEventListener("contextmenu", (e) => e.preventDefault());
 
   let spaceDown = false;
+  let volumeKeyDown = false;
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !spaceDown && !$("btn-ptt").disabled) {
       e.preventDefault();
       spaceDown = true;
       startRecording();
+    }
+    // Volume keys work as PTT on Android Chrome when a non-input element has focus.
+    if ((e.code === "AudioVolumeUp" || e.code === "AudioVolumeDown") && !$("btn-ptt").disabled) {
+      e.preventDefault();
+      if (!volumeKeyDown) { volumeKeyDown = true; startRecording(); }
     }
   });
   window.addEventListener("keyup", (e) => {
@@ -790,14 +817,20 @@
       spaceDown = false;
       stopRecording();
     }
+    if (e.code === "AudioVolumeUp" || e.code === "AudioVolumeDown") {
+      e.preventDefault();
+      volumeKeyDown = false;
+      stopRecording();
+    }
   });
 
+  $("btn-quick-drill").addEventListener("click", () => startSession("drill", 5));
   $("btn-start-eval").addEventListener("click", () => startSession("eval"));
   $("btn-start-drill").addEventListener("click", () => startSession("drill"));
   $("btn-end").addEventListener("click", endSession);
   $("btn-next").addEventListener("click", advanceNow);
   $("btn-restart-eval").addEventListener("click", () => startSession("eval"));
-  $("btn-restart-drill").addEventListener("click", () => startSession("drill"));
+  $("btn-restart-drill").addEventListener("click", () => startSession("drill", 5));
 
   document.querySelectorAll(".navlink").forEach((b) => {
     b.addEventListener("click", () => showScreen(b.dataset.screen));

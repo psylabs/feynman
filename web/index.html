@@ -32,19 +32,20 @@
       <div id="eval-banner" class="banner hidden">
         Take a 20-question baseline first so the system can tell what to drill.
       </div>
+      <div id="home-stats" class="home-stats hidden"></div>
       <div id="diagnosis-teaser" class="hidden"></div>
       <div class="actions row">
-        <button id="btn-start-eval" class="primary">Take baseline (20q)</button>
-        <button id="btn-start-drill" class="secondary">Start drill</button>
-        <label class="muted" for="drill-length" style="margin-left:0.5rem;">Length</label>
-        <select id="drill-length">
-          <option value="5">5</option>
-          <option value="8">8</option>
-          <option value="12" selected>12</option>
-          <option value="16">16</option>
-          <option value="20">20</option>
-          <option value="30">30</option>
+        <button id="btn-quick-drill" class="primary">Quick drill</button>
+        <button id="btn-start-eval" class="secondary">Baseline</button>
+        <select id="drill-length" title="Custom drill length">
+          <option value="5" selected>5q</option>
+          <option value="8">8q</option>
+          <option value="12">12q</option>
+          <option value="16">16q</option>
+          <option value="20">20q</option>
+          <option value="30">30q</option>
         </select>
+        <button id="btn-start-drill" class="secondary">Go</button>
       </div>
     </section>
 

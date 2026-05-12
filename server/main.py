@@ -133,7 +133,8 @@ def diagnosis_preview(user_id: str):
         skill = storage.get_skill(sid)
         if skill:
             skill_targets[sid] = skill["target_latency_ms"]
-    return diagnosis.diagnosis_summary(fact_stats, skill_targets, attempts)
+    summary = diagnosis.diagnosis_summary(fact_stats, skill_targets, attempts)
+    return {**summary, **storage.home_stats(user_id)}
 
 
 @app.get("/leaderboard")

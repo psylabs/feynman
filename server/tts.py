@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Callable
 
 AUDIO_DIR = Path(tempfile.gettempdir()) / "feynman_audio"
@@ -22,6 +23,23 @@ _FORMAT = "wav"
 _FALLBACK_TO_SAY = True
 
 _CLIENT = None
+
+# Hard cap: no more than this many real API calls per hour.
+# Cached hits don't count — same prompt twice is free.
+_MAX_API_CALLS_PER_HOUR = 300
+_rate_window: list[float] = []
+_rate_lock = Lock()
+
+
+def _rate_ok(emit: Callable) -> bool:
+    with _rate_lock:
+        now = time.time()
+        _rate_window[:] = [t for t in _rate_window if now - t < 3600]
+        if len(_rate_window) >= _MAX_API_CALLS_PER_HOUR:
+            emit("tts.rate_limited", calls_in_window=len(_rate_window), limit=_MAX_API_CALLS_PER_HOUR)
+            return False
+        _rate_window.append(now)
+    return True
 
 
 def _client():
@@ -40,6 +58,8 @@ def synthesize(text: str, emit: Callable) -> dict:
 
     cached = wav.exists()
     if not cached:
+        if not _rate_ok(emit):
+            return {"filename": fname, "duration_ms": None, "path": str(wav), "cached": False}
         start = time.time()
         ok = _render_openai(text, wav, emit)
         if not ok and _FALLBACK_TO_SAY:

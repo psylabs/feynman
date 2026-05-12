@@ -25,6 +25,13 @@ Current product concern: the curriculum was just re-prioritized to a foundation 
 3. **Make diagnosis records trace back to attempts.** Any review statement should be explainable from stored attempt data: skill, parameters, latency, correctness, derived fact key, derived feature tags, target latency, and sample size. Avoid adding a parallel "feedback" island that cannot be reconciled with the weakness/skill-state records.
 4. **Decide whether feature tags become scheduler targets.** First make feature-level diagnosis visible. Only then decide whether the scheduler should generate targeted probes like "subtraction with borrow across zero" or whether it should keep drilling concrete problems and merely use feature tags for analysis.
 
+## Tier 2 — Game Mechanics / Engagement
+
+1. **Fluency score on home screen.** One number — median correct-answer latency over the last 14 days across all practiced facts. Lower is better (golf score). Show a week-over-week delta (↓ 0.3s). This is the unambiguous "am I getting better" signal.
+2. **Streak tracking — both dimensions.** Show (a) current consecutive-day streak and (b) total days ever practiced. Both visible on home screen. A broken streak should feel like a loss.
+3. **Shorter default session.** Default drill length → 5q ("quick drill"). Make that the primary CTA on the home screen. Longer options (8, 12, 20) remain available but secondary. Goal: sub-3-minute default session so activation energy is near zero.
+4. **Mastery graduation events.** When a fact's median latency crosses a "unreasonably good" threshold (to be defined by user after seeing real data — something like sub-1.5s for mul), show a brief "Mastered: 7×8" moment at session end with a running total of mastered facts. Defer until there's enough data to calibrate the threshold.
+
 ## Tier 4 — Curriculum and Problem Generation
 
 see curriculum-redesign.md
