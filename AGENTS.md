@@ -61,6 +61,18 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Pre-Commit Privacy Check
+
+**This is a public repo. Before every commit, verify nothing sensitive or unintended is staged.**
+
+Check each staged file for:
+- Personal data: real names, email addresses, home locations, financial figures tied to the user
+- Credentials: API keys, tokens, passwords, private URLs
+- Files that should be gitignored: anything under `data/`, `logs/`, `.env`
+- Casual personal notes in docs (e.g. `docs/todo.md`) that weren't meant for public consumption
+
+If any staged file is ambiguous, stop and ask before committing.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

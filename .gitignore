@@ -19,3 +19,4 @@ logs/
 *.aiff
 *.webm
 .env
+docs/todo.md
