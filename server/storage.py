@@ -381,6 +381,25 @@ class Storage:
                 "UPDATE attempts SET notes = ? WHERE id = ?", (notes, attempt_id)
             )
 
+    # ---- user feedback -----------------------------------------------------
+
+    def insert_user_feedback(
+        self,
+        user_id: str,
+        session_id: str,
+        attempt_id: int | None,
+        thumb: int | None,
+        reason: str | None,
+    ) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO user_feedback "
+                "(user_id, session_id, attempt_id, thumb, reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, session_id, attempt_id, thumb, reason, time.time()),
+            )
+            return int(cur.lastrowid)
+
     # ---- diagnosis queries -------------------------------------------------
 
     def all_attempts_for_user(

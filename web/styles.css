@@ -457,6 +457,40 @@ table.leaderboard td { vertical-align: middle; }
 }
 #feedback:empty { min-height: 0; }
 
+.fb-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.fb-row.hidden { display: none; }
+.fb-row .fb-thumb {
+  background: transparent;
+  border: 1px solid #2a2d33;
+  color: inherit;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.fb-row .fb-thumb:hover:not(:disabled) { border-color: #3a3d44; }
+.fb-row .fb-thumb.selected { background: #1f2228; border-color: #4a4d54; }
+.fb-row .fb-thumb:disabled { opacity: 0.5; cursor: default; }
+.fb-row .fb-reason {
+  flex: 1;
+  min-width: 120px;
+  background: #14161b;
+  border: 1px solid #2a2d33;
+  color: inherit;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+}
+.fb-row .fb-status { min-width: 60px; }
+
 aside#debug {
   grid-area: debug;
   border-left: 1px solid #25282e;

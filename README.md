@@ -79,3 +79,28 @@ The right pane streams every event happening inside the system in real time — 
 - `schema.sql` — SQLite schema.
 - `data/feynman.db` — local database (gitignored).
 - `logs/` — daily JSONL event logs (gitignored).
+
+## Tools
+
+- `tools/seed_mastered_facts.py` — seed perfect synthetic attempts for fact
+  ranges the user already knows cold (×10, add/sub <3) so the scheduler stops
+  drilling them. Tagged `notes='seed:mastered'` for traceability/rollback.
+
+  ```
+  python tools/seed_mastered_facts.py --user "<your name>"
+  ```
+
+## Docs site (pdoc)
+
+Pushes to `main` trigger `.github/workflows/docs.yml`, which runs `pdoc` over
+`server/` and publishes the result to GitHub Pages.
+
+One-time setup: repo Settings → Pages → Source = "GitHub Actions". Until that
+toggle is flipped, the workflow runs successfully but nothing is published.
+
+Build locally:
+
+```
+pip install -e .[docs]
+pdoc server --output-directory site
+```

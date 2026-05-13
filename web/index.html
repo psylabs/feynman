@@ -57,6 +57,13 @@
       <div id="status"></div>
       <div id="result"></div>
       <div id="feedback"></div>
+      <div id="fb-question" class="fb-row hidden" data-scope="question">
+        <button class="fb-thumb" data-thumb="1" aria-label="Thumbs up">👍</button>
+        <button class="fb-thumb" data-thumb="-1" aria-label="Thumbs down">👎</button>
+        <input type="text" class="fb-reason" placeholder="why? (optional)" maxlength="200">
+        <button class="fb-save tiny">save</button>
+        <span class="fb-status muted small"></span>
+      </div>
       <div class="actions row">
         <button id="btn-next" class="primary hidden">Next →</button>
         <button id="btn-end" class="secondary">End session</button>
@@ -66,6 +73,13 @@
     <section id="screen-review" class="screen hidden">
       <h2 id="review-title">Session review</h2>
       <div id="review"></div>
+      <div id="fb-session" class="fb-row hidden" data-scope="session">
+        <button class="fb-thumb" data-thumb="1" aria-label="Thumbs up">👍</button>
+        <button class="fb-thumb" data-thumb="-1" aria-label="Thumbs down">👎</button>
+        <input type="text" class="fb-reason" placeholder="how was the drill? (optional)" maxlength="200">
+        <button class="fb-save tiny">save</button>
+        <span class="fb-status muted small"></span>
+      </div>
       <div class="actions row">
         <button id="btn-restart-drill" class="primary">Start drill</button>
         <button id="btn-restart-eval" class="secondary">Re-do baseline</button>

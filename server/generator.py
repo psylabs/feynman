@@ -299,6 +299,17 @@ def generate(
     mastery: float | None = None,
     target: dict | None = None,
 ) -> dict:
+    """Dispatch to the per-skill generator and return one rendered problem.
+
+    Each entry in ``GENERATORS`` is a ``(level, target) -> dict`` callable
+    that returns ``{prompt_text, expected_answer, parameters}``. ``level`` is
+    derived from ``mastery`` via ``mastery_to_level`` when not supplied, then
+    clamped to [1, 3]. Passing ``target`` lets the caller pin a specific fact
+    (e.g. ``{"a": 6, "b": 10}`` for multiplication).
+
+    Raises ``ValueError`` for unknown ``skill_id`` (the dispatch is closed —
+    new skills require a corresponding generator function).
+    """
     fn = GENERATORS.get(skill_id)
     if not fn:
         raise ValueError(f"no generator for skill: {skill_id}")

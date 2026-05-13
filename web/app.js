@@ -196,6 +196,7 @@
     $("result").textContent = "";
     $("result").className = "";
     $("feedback").textContent = "";
+    resetFeedbackRow($("fb-question"));
     $("btn-next").classList.add("hidden");
     $("status").textContent = "Loading…";
     $("btn-ptt").disabled = true;
@@ -329,6 +330,7 @@
     $("status").textContent = `“${r.transcript || ""}”`;
     $("feedback").textContent = r.feedback_pending ? "thinking…" : "";
     $("btn-next").classList.remove("hidden");
+    showFeedbackRow($("fb-question"), { sessionId, attemptId: currentAttemptId });
 
     // Prefetch the next question while the user reads this result.
     // Fire-and-forget: failures fall back to the live /session/next path.
@@ -368,12 +370,14 @@
 
   async function endSession() {
     if (!sessionId) return;
+    const endedSessionId = sessionId;
     const r = await fetch("/session/end", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId }),
     }).then((res) => res.json());
     renderReview(r);
+    showFeedbackRow($("fb-session"), { sessionId: endedSessionId, attemptId: null });
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
     $("screen-review").classList.remove("hidden");
     sessionId = null;
@@ -821,6 +825,85 @@
       e.preventDefault();
       volumeKeyDown = false;
       stopRecording();
+    }
+  });
+
+  function resetFeedbackRow(row) {
+    if (!row) return;
+    row.classList.add("hidden");
+    row.dataset.sessionId = "";
+    row.dataset.attemptId = "";
+    row.dataset.submitted = "";
+    row.querySelectorAll(".fb-thumb").forEach((b) => {
+      b.disabled = false;
+      b.classList.remove("selected");
+    });
+    const input = row.querySelector(".fb-reason");
+    if (input) input.value = "";
+    const status = row.querySelector(".fb-status");
+    if (status) status.textContent = "";
+  }
+
+  function showFeedbackRow(row, { sessionId, attemptId }) {
+    if (!row || !sessionId) return;
+    resetFeedbackRow(row);
+    row.dataset.sessionId = sessionId;
+    row.dataset.attemptId = attemptId == null ? "" : String(attemptId);
+    row.classList.remove("hidden");
+  }
+
+  async function postFeedback(row, body) {
+    const status = row.querySelector(".fb-status");
+    try {
+      const res = await fetch("/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      if (status) status.textContent = "thanks";
+    } catch {
+      if (status) status.textContent = "couldn't save";
+    }
+  }
+
+  document.querySelectorAll(".fb-row").forEach((row) => {
+    row.querySelectorAll(".fb-thumb").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sid = row.dataset.sessionId;
+        if (!sid) return;
+        const thumb = Number(btn.dataset.thumb);
+        row.querySelectorAll(".fb-thumb").forEach((b) => {
+          b.disabled = true;
+          b.classList.toggle("selected", b === btn);
+        });
+        const aid = row.dataset.attemptId
+          ? Number(row.dataset.attemptId)
+          : null;
+        postFeedback(row, {
+          session_id: sid,
+          attempt_id: aid,
+          thumb,
+        });
+      });
+    });
+    const saveBtn = row.querySelector(".fb-save");
+    if (saveBtn) {
+      saveBtn.addEventListener("click", () => {
+        const sid = row.dataset.sessionId;
+        if (!sid) return;
+        const input = row.querySelector(".fb-reason");
+        const reason = (input?.value || "").trim();
+        if (!reason) return;
+        const aid = row.dataset.attemptId
+          ? Number(row.dataset.attemptId)
+          : null;
+        postFeedback(row, {
+          session_id: sid,
+          attempt_id: aid,
+          reason,
+        });
+      });
     }
   });
 

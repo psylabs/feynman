@@ -34,6 +34,25 @@ DRILL_LENGTH_MAX = 30
 
 
 class Orchestrator:
+    """Composes the turn lifecycle: scheduler -> generator -> TTS -> STT ->
+    parser -> grader -> storage -> mastery.
+
+    See ``docs/architecture.md`` for the sequence diagram with file:line
+    refs. Three entry points correspond to the three HTTP routes in
+    ``server/main.py``:
+
+    - ``start_session`` (``/session/start``) creates the session row and, for
+      drill mode, computes a slot plan from diagnosis.
+    - ``next_question`` (``/session/next``) picks a skill, generates a
+      prompt, synthesises TTS, and returns ``{qid, prompt_text, audio_url}``.
+    - ``submit_answer`` (``/session/submit``) transcribes the audio, parses
+      a number, grades it, writes the attempt row, and recomputes mastery.
+
+    Pending-question state lives only in ``self._active`` between
+    ``next_question`` and ``submit_answer`` calls; everything durable goes
+    through ``Storage``.
+    """
+
     def __init__(self, storage: Storage, bus: EventBus):
         self.storage = storage
         self.bus = bus
