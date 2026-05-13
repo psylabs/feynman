@@ -274,7 +274,8 @@ class Storage:
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT a.*, s.display_name AS skill_name
+                SELECT a.*, s.display_name AS skill_name,
+                       s.target_latency_ms AS target_latency_ms
                 FROM attempts a
                 LEFT JOIN skills s ON a.skill_id = s.id
                 WHERE a.session_id = ?

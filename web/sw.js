@@ -1,7 +1,7 @@
 // Minimal service worker. Cache the app shell so the PWA opens instantly
 // even on a flaky connection. API and audio responses are network-only.
 
-const CACHE = 'feynman-shell-v3';
+const CACHE = 'feynman-shell-v4';
 const SHELL = ['/', '/app.js', '/users.js', '/debug.js', '/styles.css', '/manifest.json'];
 
 self.addEventListener('install', (event) => {
@@ -33,6 +33,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/diagnosis/') ||
     url.pathname.startsWith('/users') ||
     url.pathname.startsWith('/leaderboard') ||
+    url.pathname === '/version' ||
+    url.pathname === '/feedback' ||
     url.pathname === '/events'
   ) {
     return;
