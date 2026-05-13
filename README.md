@@ -76,19 +76,25 @@ The right pane streams every event happening inside the system in real time — 
 ## Files of interest
 
 - `skills.yaml` — skill definitions (id, tolerance, target latency, templates).
+- `suppressions.yaml` — per-skill list of active suppression rules (which
+  trivial problems to never emit). Predicates live in `server/suppressions.py`.
 - `schema.sql` — SQLite schema.
 - `data/feynman.db` — local database (gitignored).
 - `logs/` — daily JSONL event logs (gitignored).
 
-## Tools
+## Suppressing trivial problems
 
-- `tools/seed_mastered_facts.py` — seed perfect synthetic attempts for fact
-  ranges the user already knows cold (×10, add/sub <3) so the scheduler stops
-  drilling them. Tagged `notes='seed:mastered'` for traceability/rollback.
+`server/suppressions.py` holds named predicate functions (e.g.
+`trivial_diff` = "subtraction with `|a - b| <= 2`"). `suppressions.yaml`
+lists which predicates are active per skill. The generator re-samples
+when a candidate problem matches any active predicate, so trivial
+questions like `9567 - 9566` or `7 × 10` are never asked.
 
-  ```
-  python tools/seed_mastered_facts.py --user "<your name>"
-  ```
+- Adding a new *kind* of rule: write a small function in
+  `server/suppressions.py` decorated with `@rule("name")`.
+- Turning a rule on or off: edit `suppressions.yaml`.
+- Pinned target facts (the scheduler asks for a specific fact) bypass
+  suppression — the caller knows what it's doing.
 
 ## Docs site (pdoc)
 

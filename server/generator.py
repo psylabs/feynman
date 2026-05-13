@@ -10,7 +10,7 @@ Returns:
 
 import random
 
-from server import money, weather
+from server import money, suppressions, weather
 
 
 def mastery_to_level(mastery: float) -> int:
@@ -307,6 +307,10 @@ def generate(
     clamped to [1, 3]. Passing ``target`` lets the caller pin a specific fact
     (e.g. ``{"a": 6, "b": 10}`` for multiplication).
 
+    When ``target`` is not pinned, the result is checked against the active
+    suppression rules from ``suppressions.yaml`` and re-sampled if any rule
+    matches (see ``server.suppressions``). Pinned targets bypass the check.
+
     Raises ``ValueError`` for unknown ``skill_id`` (the dispatch is closed —
     new skills require a corresponding generator function).
     """
@@ -316,4 +320,14 @@ def generate(
     if level is None:
         level = mastery_to_level(mastery if mastery is not None else 0.5)
     level = max(1, min(3, int(level)))
-    return fn(level, target)
+
+    if target:
+        return fn(level, target)
+
+    active = suppressions.load_active()
+    result = fn(level, None)
+    for _ in range(suppressions.MAX_RETRIES):
+        if not suppressions.matches(skill_id, result.get("parameters", {}), active):
+            return result
+        result = fn(level, None)
+    return result
