@@ -14,16 +14,16 @@ No auth, no multi-user, no public network exposure. The server binds to localhos
 
 ```mermaid
 flowchart TB
-  subgraph Browser["Browser tab — localhost:PORT"]
-    UI["Session UI<br/>(start • prompt • push-to-talk • review)"]
-    Debug["Debug pane<br/>(live event stream)"]
+  subgraph Browser["Browser tab (localhost:PORT)"]
+    UI[Session UI: start, prompt, push-to-talk, review]
+    Debug[Debug pane: live event stream]
   end
 
-  subgraph Server["Local server — Python + FastAPI"]
+  subgraph Server["Local server (Python + FastAPI)"]
     Orch[Session orchestrator]
     Sched[Scheduler]
-    Gen[Question generator<br/>templated]
-    Grade[Grader<br/>deterministic]
+    Gen[Question generator, templated]
+    Grade[Grader, deterministic]
     Mast[Mastery updater]
     TTS[TTS adapter]
     STT[STT adapter]
@@ -32,17 +32,17 @@ flowchart TB
   end
 
   subgraph Storage["Local files"]
-    DB[("SQLite<br/>skills • sessions<br/>attempts • skill_state")]
-    Log[("JSONL log<br/>logs/YYYY-MM-DD.jsonl")]
-    Yaml[("skills.yaml<br/>hand-curated definitions")]
+    DB[(SQLite: skills, sessions, attempts, skill_state)]
+    Log[(JSONL log: logs/YYYY-MM-DD.jsonl)]
+    Yaml[(skills.yaml, hand-curated definitions)]
   end
 
   subgraph External["External APIs"]
-    OAI["OpenAI<br/>TTS + Whisper STT"]
+    OAI[OpenAI: TTS plus Whisper STT]
   end
 
-  UI <-- "HTTP" --> Orch
-  Debug <-. "SSE" .- Bus
+  UI <--> Orch
+  Debug <-.-> Bus
 
   Orch --> Sched
   Orch --> Gen
