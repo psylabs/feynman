@@ -307,9 +307,12 @@ def generate(
     clamped to [1, 3]. Passing ``target`` lets the caller pin a specific fact
     (e.g. ``{"a": 6, "b": 10}`` for multiplication).
 
-    When ``target`` is not pinned, the result is checked against the active
-    suppression rules from ``suppressions.yaml`` and re-sampled if any rule
-    matches (see ``server.suppressions``). Pinned targets bypass the check.
+    Every result is checked against the active suppression rules from
+    ``suppressions.yaml`` (see ``server.suppressions``). If a sampled
+    result matches a rule, ``target`` is dropped and we re-sample freely
+    until we get a non-trivial problem. The user's suppression list wins
+    over scheduler hints — the scheduler will get a different problem in
+    the same skill.
 
     Raises ``ValueError`` for unknown ``skill_id`` (the dispatch is closed —
     new skills require a corresponding generator function).
@@ -321,13 +324,14 @@ def generate(
         level = mastery_to_level(mastery if mastery is not None else 0.5)
     level = max(1, min(3, int(level)))
 
-    if target:
-        return fn(level, target)
-
     active = suppressions.load_active()
-    result = fn(level, None)
+    result = fn(level, target)
+    if not suppressions.matches(skill_id, result.get("parameters", {}), active):
+        return result
+
+    # Sampled result is trivial. Drop the target hint and re-sample.
     for _ in range(suppressions.MAX_RETRIES):
+        result = fn(level, None)
         if not suppressions.matches(skill_id, result.get("parameters", {}), active):
             return result
-        result = fn(level, None)
     return result
