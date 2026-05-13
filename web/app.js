@@ -50,6 +50,7 @@
     $("greeting").textContent = user ? `Hi, ${user.name}.` : "Hi.";
     $("diagnosis-teaser").classList.add("hidden");
     $("home-stats").classList.add("hidden");
+    loadVersionIndicator();
     if (!user) return;
     if (user.has_completed_eval) {
       $("eval-banner").classList.add("hidden");
@@ -57,6 +58,33 @@
       $("eval-banner").classList.remove("hidden");
     }
     loadDiagnosisTeaser(user.id);
+  }
+
+  async function loadVersionIndicator() {
+    const el = $("version-indicator");
+    if (!el) return;
+    try {
+      const v = await fetch("/version", { cache: "no-store" }).then((r) => r.json());
+      if (!v || (!v.sha && !v.committed_at)) { el.classList.add("hidden"); return; }
+      const when = v.committed_at ? fmtRelative(v.committed_at) : "";
+      const sha = v.sha ? `<code>${escapeHtml(v.sha)}</code>` : "";
+      const msg = v.message ? `<span class="vi-msg">${escapeHtml(v.message.slice(0, 100))}${v.message.length > 100 ? "…" : ""}</span>` : "";
+      el.innerHTML = `Updated ${escapeHtml(when)} · ${sha}${msg ? " — " + msg : ""}`;
+      el.classList.remove("hidden");
+    } catch {
+      el.classList.add("hidden");
+    }
+  }
+
+  function fmtRelative(iso) {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return iso;
+    const diffSec = Math.max(0, (Date.now() - t) / 1000);
+    if (diffSec < 60) return "just now";
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+    if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)}d ago`;
+    return new Date(t).toLocaleDateString();
   }
 
   async function loadDiagnosisTeaser(userId) {
@@ -485,42 +513,79 @@
     const skipped = a.filter((x) => x.skipped).length;
     const lats = a.map((x) => x.resolution_latency_ms).filter((v) => v != null).sort((x, y) => x - y);
     const median = lats.length ? lats[Math.floor(lats.length / 2)] : null;
+    const accPct = Math.round((correct / total) * 100);
 
-    const diag = r.diagnosis;
-    const analysis = r.session_analysis;
-    let html = "";
+    let html = `<div class="big-metrics">
+      <div class="big-metric"><div class="bm-val ${accClass(correct / total)}">${accPct}%</div><div class="bm-label">accuracy · ${correct}/${total}${skipped ? ` · ${skipped} skipped` : ""}</div></div>
+      <div class="big-metric"><div class="bm-val">${fmtSec(median)}</div><div class="bm-label">median response</div></div>
+    </div>`;
 
-    // 1. What this session was designed to drill.
-    if (!isEval && analysis) html += renderSessionAnalysis(analysis);
+    const perSkill = perSkillSummary(a);
+    if (perSkill.length) {
+      const wins = perSkill.filter((s) => s.acc >= 0.9 && (s.target == null || s.median == null || s.median <= s.target));
+      const losses = perSkill.filter((s) => s.acc < 0.9 || (s.target != null && s.median != null && s.median > s.target));
 
-    // 2. What I noticed (diagnosis-first; baseline mode skips this since the
-    //    diagnosis was just produced from this session)
-    if (!isEval && diag) html += renderNoticed(diag);
+      if (wins.length) {
+        html += `<h3 class="section">Where you did well</h3><ul class="review-bullets good">${
+          wins.map((s) => `<li><strong>${escapeHtml(s.name)}</strong> — ${Math.round(s.acc * 100)}% (${s.correct}/${s.total})${s.median != null ? `, ${fmtSec(s.median)}` : ""}</li>`).join("")
+        }</ul>`;
+      }
+      if (losses.length) {
+        html += `<h3 class="section">Where to improve</h3><ul class="review-bullets bad">${
+          losses.map((s) => {
+            const accStr = `${Math.round(s.acc * 100)}% (${s.correct}/${s.total})`;
+            const slow = s.target != null && s.median != null && s.median > s.target
+              ? ` · ${fmtSec(s.median)} vs target ${fmtSec(s.target)}` : (s.median != null ? ` · ${fmtSec(s.median)}` : "");
+            return `<li><strong>${escapeHtml(s.name)}</strong> — ${accStr}${slow}</li>`;
+          }).join("")
+        }</ul>`;
+      }
 
-    // 3. This session at a glance
-    html += `<h3 class="section">This session</h3>
-      <div class="summary">
-        <div class="stat"><div class="label">Correct</div><div class="value">${correct}/${total}</div></div>
-        <div class="stat"><div class="label">Skipped</div><div class="value">${skipped}</div></div>
-        <div class="stat"><div class="label">Median latency</div><div class="value">${fmtSec(median)}</div></div>
-      </div>`;
-
-    // 4. Baseline matrix (eval only) or attempts table (collapsed by default for drills)
-    if (isEval) {
-      html += renderBaselineMatrix(a);
-      html += attemptsTable(a, /*includeLevel*/ true);
-    } else {
-      html += `<details class="review-details">
-        <summary>Attempt-by-attempt details (${total})</summary>
-        ${attemptsTable(a, /*includeLevel*/ true)}
-      </details>`;
+      html += `<h3 class="section">By skill</h3>
+        <table class="metrics"><thead><tr><th>Skill</th><th class="num">Accuracy</th><th class="num">Median</th><th class="num">Target</th></tr></thead><tbody>${
+          perSkill.map((s) => `<tr>
+            <td><strong>${escapeHtml(s.name)}</strong></td>
+            <td class="num ${accClass(s.acc)}">${Math.round(s.acc * 100)}% <span class="muted small">(${s.correct}/${s.total})</span></td>
+            <td class="num ${s.target != null && s.median != null && s.median > s.target ? "val-bad" : ""}">${fmtSec(s.median)}</td>
+            <td class="num muted">${fmtSec(s.target)}</td>
+          </tr>`).join("")
+        }</tbody></table>`;
     }
 
-    // 5. Per-question feedback (optional). One row per attempt so we can
-    //    learn which specific drills are worth fixing.
+    if (isEval) html += renderBaselineMatrix(a);
+
+    html += `<details class="review-details">
+      <summary>Attempt-by-attempt details (${total})</summary>
+      ${attemptsTable(a, /*includeLevel*/ true)}
+    </details>`;
+
     html += renderFeedbackList(r.session_id, a);
 
     $("review").innerHTML = html;
+  }
+
+  function perSkillSummary(attempts) {
+    const by = {};
+    for (const x of attempts) {
+      const id = x.skill_id || "unknown";
+      if (!by[id]) by[id] = { name: x.skill_name || id, total: 0, correct: 0, lats: [], target: null };
+      by[id].total++;
+      if (x.correct) by[id].correct++;
+      if (x.resolution_latency_ms != null) by[id].lats.push(x.resolution_latency_ms);
+      if (x.target_latency_ms != null) by[id].target = x.target_latency_ms;
+    }
+    return Object.values(by).map((s) => {
+      const sorted = s.lats.sort((p, q) => p - q);
+      const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+      return { name: s.name, total: s.total, correct: s.correct, acc: s.correct / s.total, median, target: s.target };
+    }).sort((p, q) => q.total - p.total);
+  }
+
+  function accClass(acc) {
+    if (acc == null) return "";
+    if (acc >= 0.9) return "val-good";
+    if (acc >= 0.7) return "val-warn";
+    return "val-bad";
   }
 
   function renderFeedbackList(sessionId, attempts) {
@@ -544,6 +609,14 @@
 
   async function postFeedback(row, body) {
     const status = row.querySelector(".fb-status");
+    const input = row.querySelector(".fb-reason");
+    const saveBtn = row.querySelector(".fb-save");
+    const isTextSave = body.reason != null;
+    if (status) status.textContent = "saving…";
+    if (isTextSave) {
+      if (input) input.disabled = true;
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "saving…"; }
+    }
     try {
       const res = await fetch("/feedback", {
         method: "POST",
@@ -551,9 +624,17 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(String(res.status));
-      if (status) status.textContent = "thanks";
+      if (status) status.textContent = "saved ✓";
+      if (isTextSave) {
+        row.classList.add("fb-saved");
+        if (saveBtn) saveBtn.textContent = "saved";
+      }
     } catch {
-      if (status) status.textContent = "couldn't save";
+      if (status) status.textContent = "couldn't save — retry";
+      if (isTextSave) {
+        if (input) input.disabled = false;
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "save"; }
+      }
     }
   }
 

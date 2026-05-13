@@ -243,6 +243,38 @@ table.matrix th, table.matrix td { padding: 4px 12px; }
 .val-bad { color: #ef4444; }
 .val-warn { color: #d4a64a; }
 .val-ok { color: #888; }
+.val-good { color: #22c55e; }
+
+/* ---- big metrics (session review) ---- */
+.big-metrics {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+  padding: 8px 0 24px 0;
+}
+.big-metric { display: flex; flex-direction: column; }
+.bm-val {
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+}
+.bm-label { font-size: 12px; color: #888; margin-top: 6px; }
+
+.review-bullets {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 16px 0;
+}
+.review-bullets li {
+  font-size: 14px;
+  padding: 4px 0 4px 18px;
+  position: relative;
+}
+.review-bullets.good li::before { content: "✓"; position: absolute; left: 0; color: #22c55e; }
+.review-bullets.bad li::before { content: "→"; position: absolute; left: 0; color: #d4a64a; }
+table.metrics { margin-top: 4px; }
 
 /* ---- home stats bar ---- */
 .home-stats {
@@ -291,6 +323,24 @@ table.matrix th, table.matrix td { padding: 4px 12px; }
 .teaser-sub { font-size: 13px; color: #b0b1b4; }
 .teaser-reg { font-size: 13px; color: #d4a64a; margin-top: 6px; }
 .teaser-foot { font-size: 11px; color: #777; margin-top: 8px; }
+
+/* ---- version indicator (start screen) ---- */
+.version-indicator {
+  font-size: 11px;
+  color: #666;
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px solid #1c1f24;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.version-indicator code {
+  background: transparent;
+  color: #888;
+  padding: 0;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+}
+.version-indicator .vi-msg { color: #888; }
 
 /* ---- in-session plan ---- */
 .session-plan {
@@ -490,6 +540,9 @@ table.leaderboard td { vertical-align: middle; }
   font: inherit;
 }
 .fb-row .fb-status { min-width: 60px; }
+.fb-row.fb-saved .fb-reason { opacity: 0.6; }
+.fb-row.fb-saved .fb-save { background: #1c2a22; border-color: #2d4a3a; color: #6dd197; opacity: 1; }
+.fb-row .fb-status { color: #6dd197; }
 .fb-row .fb-mark { width: 14px; text-align: center; }
 .fb-row .fb-mark.correct { color: #22c55e; }
 .fb-row .fb-mark.wrong { color: #ef4444; }

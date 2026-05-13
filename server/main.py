@@ -3,7 +3,10 @@
 import asyncio
 import json
 import os
+import resource
+import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -27,6 +30,55 @@ LOG_DIR = ROOT / "logs"
 WEB_DIR = ROOT / "web"
 ANSWER_DIR = Path(tempfile.gettempdir()) / "feynman_answers"
 ANSWER_DIR.mkdir(exist_ok=True)
+
+
+def _raise_fd_limit(target: int = 4096) -> None:
+    """macOS defaults RLIMIT_NOFILE to 256 — too low under sustained static
+    file traffic plus SSE. Bump the soft limit toward the hard cap so we
+    don't blow up serving index.html."""
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        desired = min(target, hard) if hard != resource.RLIM_INFINITY else target
+        if soft < desired:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (desired, hard))
+    except (ValueError, OSError):
+        pass
+
+
+def _purge_old_answers(max_age_sec: int = 3600) -> int:
+    """Delete leftover answer-audio files older than max_age_sec."""
+    removed = 0
+    cutoff = time.time() - max_age_sec
+    try:
+        for p in ANSWER_DIR.iterdir():
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
+
+
+def _git_version_info() -> dict:
+    """One-shot at startup: shell out for the current HEAD."""
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(ROOT), "log", "-1", "--format=%h%x1f%s%x1f%cI"],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode().strip()
+        sha, message, committed_iso = out.split("\x1f", 2)
+        return {"sha": sha, "message": message, "committed_at": committed_iso}
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return {"sha": None, "message": None, "committed_at": None}
+
+
+_raise_fd_limit()
+_purge_old_answers()
+VERSION_INFO = _git_version_info()
 
 app = FastAPI(title="Feynman")
 bus = EventBus(LOG_DIR)
@@ -65,6 +117,13 @@ async def check_env():
     else:
         bus.emit("startup.ready")
         print("[startup] ready (OpenAI key detected)", flush=True)
+
+
+@app.get("/version")
+def version():
+    """Surface the deployed git commit so the home screen can confirm pushes
+    have made it to the running server."""
+    return VERSION_INFO
 
 
 @app.get("/users")
@@ -220,6 +279,11 @@ async def session_submit(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    finally:
+        try:
+            audio_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # If this attempt was recorded and warrants feedback, generate it in the
     # background so the response returns immediately. Feedback streams to the
