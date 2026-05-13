@@ -1,7 +1,7 @@
 // Minimal service worker. Cache the app shell so the PWA opens instantly
 // even on a flaky connection. API and audio responses are network-only.
 
-const CACHE = 'feynman-shell-v2';
+const CACHE = 'feynman-shell-v3';
 const SHELL = ['/', '/app.js', '/users.js', '/debug.js', '/styles.css', '/manifest.json'];
 
 self.addEventListener('install', (event) => {

@@ -490,6 +490,20 @@ table.leaderboard td { vertical-align: middle; }
   font: inherit;
 }
 .fb-row .fb-status { min-width: 60px; }
+.fb-row .fb-mark { width: 14px; text-align: center; }
+.fb-row .fb-mark.correct { color: #22c55e; }
+.fb-row .fb-mark.wrong { color: #ef4444; }
+.fb-row .fb-mark.skipped { color: #888; }
+.fb-row .fb-prompt {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#fb-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+#fb-list .fb-row { border-bottom: 1px solid #1f2228; padding-bottom: 6px; margin-top: 0; }
+#fb-list .fb-row:last-child { border-bottom: 0; }
 
 aside#debug {
   grid-area: debug;
