@@ -368,11 +368,13 @@
 
   async function endSession() {
     if (!sessionId) return;
+    const endedSessionId = sessionId;
     const r = await fetch("/session/end", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId }),
     }).then((res) => res.json());
+    r.session_id = endedSessionId;
     renderReview(r);
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
     $("screen-review").classList.remove("hidden");
@@ -514,8 +516,80 @@
       </details>`;
     }
 
+    // 5. Per-question feedback (optional). One row per attempt so we can
+    //    learn which specific drills are worth fixing.
+    html += renderFeedbackList(r.session_id, a);
+
     $("review").innerHTML = html;
   }
+
+  function renderFeedbackList(sessionId, attempts) {
+    if (!sessionId || !attempts || !attempts.length) return "";
+    const rows = attempts.map((x) => {
+      const cls = x.skipped ? "skipped" : x.correct ? "correct" : "wrong";
+      const mark = x.skipped ? "—" : x.correct ? "✓" : "✗";
+      return `<div class="fb-row" data-session-id="${sessionId}" data-attempt-id="${x.id}">
+        <span class="fb-mark ${cls}">${mark}</span>
+        <span class="fb-prompt">${escapeHtml(x.prompt_text)}</span>
+        <button class="fb-thumb" data-thumb="1" aria-label="Thumbs up">👍</button>
+        <button class="fb-thumb" data-thumb="-1" aria-label="Thumbs down">👎</button>
+        <input type="text" class="fb-reason" placeholder="why? (optional)" maxlength="200">
+        <button class="fb-save tiny">save</button>
+        <span class="fb-status muted small"></span>
+      </div>`;
+    }).join("");
+    return `<h3 class="section">Rate these questions <span class="muted small">(optional, helps tune future drills)</span></h3>
+      <div id="fb-list">${rows}</div>`;
+  }
+
+  async function postFeedback(row, body) {
+    const status = row.querySelector(".fb-status");
+    try {
+      const res = await fetch("/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      if (status) status.textContent = "thanks";
+    } catch {
+      if (status) status.textContent = "couldn't save";
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    const thumb = e.target.closest(".fb-thumb");
+    if (thumb) {
+      const row = thumb.closest(".fb-row");
+      if (!row || !row.dataset.sessionId) return;
+      const value = Number(thumb.dataset.thumb);
+      row.querySelectorAll(".fb-thumb").forEach((b) => {
+        b.disabled = true;
+        b.classList.toggle("selected", b === thumb);
+      });
+      const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
+      postFeedback(row, {
+        session_id: row.dataset.sessionId,
+        attempt_id: aid,
+        thumb: value,
+      });
+      return;
+    }
+    const save = e.target.closest(".fb-save");
+    if (save) {
+      const row = save.closest(".fb-row");
+      if (!row || !row.dataset.sessionId) return;
+      const input = row.querySelector(".fb-reason");
+      const reason = (input?.value || "").trim();
+      if (!reason) return;
+      const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
+      postFeedback(row, {
+        session_id: row.dataset.sessionId,
+        attempt_id: aid,
+        reason,
+      });
+    }
+  });
 
   function renderSessionAnalysis(a) {
     const plan = a.plan || {};

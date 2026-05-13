@@ -240,6 +240,35 @@ def session_end(payload: dict):
     return orch.end_session(sid)
 
 
+@app.post("/feedback")
+def post_feedback(payload: dict):
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(400, "session_id required")
+    session = storage.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "session not found")
+    attempt_id = payload.get("attempt_id")
+    thumb = payload.get("thumb")
+    reason = (payload.get("reason") or "").strip() or None
+    if thumb is not None and thumb not in (1, -1):
+        raise HTTPException(400, "thumb must be 1 or -1")
+    if thumb is None and not reason:
+        raise HTTPException(400, "thumb or reason required")
+    fid = storage.insert_user_feedback(
+        session["user_id"], session_id, attempt_id, thumb, reason
+    )
+    bus.emit(
+        "feedback.user_submitted",
+        id=fid,
+        session_id=session_id,
+        attempt_id=attempt_id,
+        thumb=thumb,
+        has_reason=bool(reason),
+    )
+    return {"id": fid}
+
+
 @app.get("/audio/{name}")
 def audio(name: str):
     p = tts.get_audio_path(name)

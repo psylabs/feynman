@@ -93,6 +93,51 @@ A single question is the unit of orchestration. Everything else is composition o
 
 Every step emits a structured event into the bus.
 
+### Turn lifecycle — sequence
+
+The same flow, with each arrow tagged to its file:line so you can jump straight
+into the code from the rendered diagram.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser (web/app.js)
+  participant API as FastAPI (server/main.py)
+  participant Orch as Orchestrator (server/orchestrator.py)
+  participant Sched as Scheduler (server/scheduler.py)
+  participant Gen as Generator (server/generator.py)
+  participant TTS as TTS (server/tts.py)
+  participant STT as STT (server/stt.py)
+  participant Grade as Grader (server/grader.py)
+  participant Mast as Mastery (server/mastery.py)
+  participant DB as Storage (server/storage.py)
+
+  B->>API: POST /session/next  (main.py:164)
+  API->>Orch: next_question()  (orchestrator.py:145)
+  Orch->>Sched: pick_drill()   (scheduler.py:26)
+  Sched->>DB: read skill_state
+  Orch->>Gen: generate(skill)  (generator.py:296)
+  Orch->>TTS: synthesize(text)
+  TTS-->>Orch: audio_url
+  Orch-->>API: {qid, prompt, audio_url}
+  API-->>B: 200 {qid, prompt, audio_url}
+
+  B->>API: POST /session/submit (main.py:190)
+  API->>Orch: submit_answer()   (orchestrator.py:259)
+  Orch->>STT: transcribe(audio)
+  STT-->>Orch: transcript
+  Orch->>Grade: grade(parsed, expected)
+  Grade-->>Orch: {correct, error}
+  Orch->>DB: insert_attempt()
+  Orch->>Mast: update()         (mastery.py:8)
+  Mast->>DB: update_skill_state()
+  Orch-->>API: result
+  API-->>B: 200 result
+
+  B->>API: POST /feedback (optional, main.py:/feedback)
+  API->>DB: insert_user_feedback()
+```
+
 ## 4. Components
 
 **Session orchestrator** is the only thing the HTTP layer talks to. It composes the other modules into the turn lifecycle and owns no state of its own — everything that needs to persist goes through Storage.

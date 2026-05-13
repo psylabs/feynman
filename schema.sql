@@ -56,6 +56,17 @@ CREATE TABLE IF NOT EXISTS skill_state (
   PRIMARY KEY (user_id, skill_id)
 );
 
+CREATE TABLE IF NOT EXISTS user_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  attempt_id INTEGER,
+  thumb INTEGER,
+  reason TEXT,
+  created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_attempts_skill ON attempts(skill_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_attempts_session ON attempts(session_id);
+CREATE INDEX IF NOT EXISTS idx_user_feedback_session ON user_feedback(session_id);
 -- idx_sessions_user is created by the migration step after user_id is ensured.
