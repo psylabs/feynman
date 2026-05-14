@@ -240,6 +240,7 @@
     $("position").textContent = `Question ${r.position} of ${r.target_questions}`;
 
     const audio = new Audio(r.audio_url);
+    audio.playbackRate = 1.5;
     $("status").textContent = "Listening…";
     audio.addEventListener("ended", () => {
       promptEndTs = Date.now() / 1000;
