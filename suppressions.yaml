@@ -1,19 +1,23 @@
 # Active suppression rules per skill. Names must exist in
-# server/suppressions.py REGISTRY. The generator re-samples when a sampled
-# problem matches any of these; pinned target facts bypass the check.
-#
-# To turn a rule off: comment it out or delete the line. To add a new rule
-# *kind*, write a predicate in server/suppressions.py and reference it here.
+# server/suppressions.py REGISTRY.
 
 addition:
   - single_digit_small
+  - small_operand
+  - by_ten
 
 subtraction:
   - single_digit_small
-  - trivial_diff      # |a - b| <= 2 (e.g. 9567 - 9566)
-  - round_diff        # |a - b| in {5, 10, 50, 100, 200, 300, 400, 500, 1000}
+  - trivial_diff
+  - round_diff
   - subtract_zero
   - equal_operands
+  - small_operand
+  - by_ten
 
 multiplication:
   - by_ten
+
+weather_math:
+  - trivial_diff
+  - round_diff

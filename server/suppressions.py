@@ -42,68 +42,49 @@ def rule(name: str) -> Callable[[Predicate], Predicate]:
     return deco
 
 
-def _ab(params: dict) -> tuple[int | None, int | None]:
-    a, b = params.get("a"), params.get("b")
-    if a is None or b is None:
-        return None, None
-    return int(a), int(b)
+def _f(params: dict) -> dict:
+    return params.get("features") or {}
 
 
 @rule("single_digit_small")
 def _single_digit_small(skill_id: str, params: dict) -> bool:
-    """Both operands in [0, 2]. Trivial for an adult."""
-    a, b = _ab(params)
-    if a is None:
-        return False
-    return abs(a) <= 2 and abs(b) <= 2
+    return _f(params).get("max_operand", float("inf")) <= 2
 
 
 @rule("trivial_diff")
 def _trivial_diff(skill_id: str, params: dict) -> bool:
-    """Subtraction whose difference is <= 2 (e.g. 9567 - 9566)."""
-    if skill_id != "subtraction":
-        return False
-    a, b = _ab(params)
-    if a is None:
-        return False
-    return abs(a - b) <= 2
+    v = _f(params).get("abs_diff")
+    return v is not None and v <= 2
 
 
 @rule("round_diff")
 def _round_diff(skill_id: str, params: dict) -> bool:
-    """Subtraction whose difference is a canonical round number."""
-    if skill_id != "subtraction":
-        return False
-    a, b = _ab(params)
-    if a is None:
-        return False
-    return abs(a - b) in _ROUND_DIFFS
+    v = _f(params).get("abs_diff")
+    return v is not None and v in _ROUND_DIFFS
 
 
 @rule("subtract_zero")
 def _subtract_zero(skill_id: str, params: dict) -> bool:
-    if skill_id != "subtraction":
-        return False
-    return params.get("b") == 0
+    return _f(params).get("min_operand") == 0
 
 
 @rule("by_ten")
 def _by_ten(skill_id: str, params: dict) -> bool:
-    """Multiplication where one factor is 10."""
-    if skill_id != "multiplication":
-        return False
-    a, b = _ab(params)
-    if a is None:
-        return False
-    return a == 10 or b == 10
+    f = _f(params)
+    m, M = f.get("min_operand"), f.get("max_operand")
+    return m is not None and (m == 10 or M == 10)
 
 
 @rule("equal_operands")
 def _equal_operands(skill_id: str, params: dict) -> bool:
-    a, b = _ab(params)
-    if a is None:
-        return False
-    return a == b
+    f = _f(params)
+    m, M = f.get("min_operand"), f.get("max_operand")
+    return m is not None and m == M
+
+
+@rule("small_operand")
+def _small_operand(skill_id: str, params: dict) -> bool:
+    return _f(params).get("min_operand", float("inf")) <= 2
 
 
 # ---- loader ---------------------------------------------------------------
