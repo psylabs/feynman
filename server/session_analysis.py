@@ -1,5 +1,6 @@
 """Summaries that make a drill session's intent and outcome explicit."""
 
+import json
 import statistics
 from collections import Counter, defaultdict
 
@@ -88,6 +89,7 @@ def review_analysis(slots: list[dict], attempts: list[dict], exploratory: bool =
         "moved": _moved_lines(focus_stats),
         "still_weak": _weak_lines(focus_stats),
         "next_time": _next_time_line(focus_stats),
+        "stratification": _session_stratification(attempts),
     }
 
 
@@ -118,6 +120,83 @@ def exploratory_review_analysis(
     if not slots:
         return None
     return review_analysis(slots, attempts, exploratory=True)
+
+
+def pattern_analysis(attempts: list[dict]) -> list[dict]:
+    correct = [
+        a for a in attempts
+        if a.get("correct") and a.get("resolution_latency_ms") is not None
+    ]
+    if not correct:
+        return []
+    by_skill: dict[str, list[int]] = defaultdict(list)
+    for a in correct:
+        by_skill[a["skill_id"]].append(int(a["resolution_latency_ms"]))
+    baseline = {sid: statistics.median(lats) for sid, lats in by_skill.items()}
+    groups: dict[tuple, list[int]] = defaultdict(list)
+    for a in correct:
+        params = a.get("parameters") or {}
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except (TypeError, ValueError):
+                continue
+        for key, val in (params.get("features") or {}).items():
+            groups[(a["skill_id"], key, val)].append(int(a["resolution_latency_ms"]))
+    results = []
+    for (skill_id, fkey, fval), lats in groups.items():
+        if len(lats) < 5:
+            continue
+        b = baseline.get(skill_id, 0)
+        if not b:
+            continue
+        ratio = statistics.median(lats) / b
+        if ratio <= 1.4:
+            continue
+        results.append({
+            "skill_id": skill_id,
+            "feature_key": fkey,
+            "feature_value": fval,
+            "ratio": round(ratio, 2),
+            "n": len(lats),
+            "group_median_ms": int(statistics.median(lats)),
+            "baseline_ms": int(b),
+        })
+    return sorted(results, key=lambda r: r["ratio"], reverse=True)[:3]
+
+
+_STRATIFY_CONFIG: dict[str, tuple[str, dict | None]] = {
+    "subtraction": ("borrow", {True: "with borrow", False: "no borrow"}),
+    "addition": ("carry", {True: "with carry", False: "no carry"}),
+    "weather_math": ("operation", None),
+}
+
+
+def _session_stratification(attempts: list[dict]) -> list[dict]:
+    by_skill: dict[str, list[dict]] = defaultdict(list)
+    for a in attempts:
+        by_skill[a.get("skill_id", "")].append(a)
+    result = []
+    for skill_id, rows in by_skill.items():
+        config = _STRATIFY_CONFIG.get(skill_id)
+        if not config:
+            continue
+        key, labels = config
+        buckets: dict = defaultdict(list)
+        for a in rows:
+            params = a.get("parameters") or {}
+            val = params.get(key)
+            if val is not None:
+                buckets[val].append(a)
+        valid = {k: v for k, v in buckets.items() if len(v) >= 2}
+        if len(valid) < 2:
+            continue
+        strat_rows = []
+        for val, bucket in sorted(valid.items(), key=lambda x: str(x[0])):
+            label = (labels or {}).get(val, str(val)) if labels else str(val)
+            strat_rows.append({"label": label, "param_value": val, **_attempt_stats(bucket)})
+        result.append({"skill_id": skill_id, "param_key": key, "rows": strat_rows})
+    return result
 
 
 def _role_counts(slots: list[dict]) -> dict[str, int]:
@@ -273,7 +352,7 @@ def _moved_lines(focus_stats: list[dict]) -> list[str]:
 def _weak_lines(focus_stats: list[dict]) -> list[str]:
     lines = []
     for row in focus_stats:
-        if not row["total"]:
+        if not row["total"] or row["total"] < 5:
             continue
         if row["accuracy"] is not None and row["accuracy"] < 1:
             lines.append(
