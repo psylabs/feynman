@@ -185,6 +185,11 @@ def _session_stratification(attempts: list[dict]) -> list[dict]:
         buckets: dict = defaultdict(list)
         for a in rows:
             params = a.get("parameters") or {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except (TypeError, ValueError):
+                    continue
             val = params.get(key)
             if val is not None:
                 buckets[val].append(a)
