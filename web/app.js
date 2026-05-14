@@ -672,6 +672,19 @@
     }
   });
 
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const input = e.target.closest(".fb-reason");
+    if (!input) return;
+    const row = input.closest(".fb-row");
+    if (!row || !row.dataset.sessionId) return;
+    const reason = (input.value || "").trim();
+    if (!reason) return;
+    e.preventDefault();
+    const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
+    postFeedback(row, { session_id: row.dataset.sessionId, attempt_id: aid, reason });
+  });
+
   function renderSessionAnalysis(a) {
     const plan = a.plan || {};
     const roleStats = a.role_stats || {};
