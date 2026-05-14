@@ -119,6 +119,7 @@ def _temp_delta(location: dict, forecast: dict) -> dict:
             "location": location["name"],
             "warmer": warmer,
             "cooler": cooler,
+            "features": _delta_features(warmer, cooler, "temp_delta"),
         },
     }
 
@@ -141,6 +142,7 @@ def _daily_range(location: dict, forecast: dict) -> dict:
             "location": location["name"],
             "high": hi,
             "low": lo,
+            "features": _delta_features(hi, lo, "daily_range"),
         },
     }
 
@@ -190,6 +192,7 @@ def _wind_delta(location: dict, forecast: dict) -> dict:
             "location": location["name"],
             "stronger": stronger,
             "calmer": calmer,
+            "features": _delta_features(stronger, calmer, "wind_delta"),
         },
     }
 
@@ -286,6 +289,15 @@ def _pick_distinct_pair(forecast: dict, field: str) -> tuple[int, int, int, int]
                     i, j = j, i
                 return i, j, rounded[i], rounded[j]
     return None
+
+
+def _delta_features(a: int, b: int, operation: str) -> dict:
+    return {
+        "abs_diff": abs(a - b),
+        "min_operand": min(a, b),
+        "max_operand": max(a, b),
+        "operation": operation,
+    }
 
 
 def _day_label(date_str: str) -> str:
