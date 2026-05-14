@@ -13,6 +13,13 @@ import random
 from server import money, suppressions, weather
 
 
+def _compute_features(a: int, b: int, *, extra: dict | None = None) -> dict:
+    f = {"abs_diff": abs(a - b), "min_operand": min(a, b), "max_operand": max(a, b)}
+    if extra:
+        f.update(extra)
+    return f
+
+
 def mastery_to_level(mastery: float) -> int:
     if mastery < 0.4:
         return 1
@@ -30,14 +37,13 @@ def _gen_addition(level: int, target: dict | None = None) -> dict:
         a, b = _addition_from_pattern(target["pattern"], target.get("force_carry", False))
     else:
         a, b = _sample_addition(level)
+    carry = ((a % 10) + (b % 10)) >= 10
     return {
         "prompt": f"What is {a} plus {b}?",
         "expected": float(a + b),
         "parameters": {
-            "a": a,
-            "b": b,
-            "carry": ((a % 10) + (b % 10)) >= 10,
-            "level": level,
+            "a": a, "b": b, "carry": carry, "level": level,
+            "features": _compute_features(a, b, extra={"has_carry": carry}),
         },
     }
 
@@ -121,14 +127,13 @@ def _gen_subtraction(level: int, target: dict | None = None) -> dict:
         a, b = _subtraction_from_hints(level, target)
     else:
         a, b = _sample_subtraction(level)
+    borrow = (a % 10) < (b % 10)
     return {
         "prompt": f"What is {a} minus {b}?",
         "expected": float(a - b),
         "parameters": {
-            "a": a,
-            "b": b,
-            "borrow": (a % 10) < (b % 10),
-            "level": level,
+            "a": a, "b": b, "borrow": borrow, "level": level,
+            "features": _compute_features(a, b, extra={"has_borrow": borrow}),
         },
     }
 
@@ -216,7 +221,8 @@ def _gen_multiplication(level: int, target: dict | None = None) -> dict:
     return {
         "prompt": f"What is {a} times {b}?",
         "expected": float(a * b),
-        "parameters": {"a": a, "b": b, "level": level},
+        "parameters": {"a": a, "b": b, "level": level,
+                       "features": _compute_features(a, b)},
     }
 
 
@@ -234,7 +240,8 @@ def _gen_division(level: int, target: dict | None = None) -> dict:
     return {
         "prompt": f"What is {a} divided by {b}?",
         "expected": float(a / b),
-        "parameters": {"a": a, "b": b, "level": level},
+        "parameters": {"a": a, "b": b, "level": level,
+                       "features": _compute_features(a, b)},
     }
 
 

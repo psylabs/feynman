@@ -672,6 +672,19 @@
     }
   });
 
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const input = e.target.closest(".fb-reason");
+    if (!input) return;
+    const row = input.closest(".fb-row");
+    if (!row || !row.dataset.sessionId) return;
+    const reason = (input.value || "").trim();
+    if (!reason) return;
+    e.preventDefault();
+    const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
+    postFeedback(row, { session_id: row.dataset.sessionId, attempt_id: aid, reason });
+  });
+
   function renderSessionAnalysis(a) {
     const plan = a.plan || {};
     const roleStats = a.role_stats || {};
@@ -699,6 +712,18 @@
     }).join("");
     const moved = (a.moved || []).slice(0, 2).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
     const weak = (a.still_weak || []).slice(0, 2).map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+    const _FEAT_LABELS = {has_borrow: "borrow", has_carry: "carry", operation: "operation"};
+    const stratBits = (a.stratification || []).map((s) => {
+      const rowBits = s.rows.map((r) =>
+        `<li>${escapeHtml(r.label)}: ${r.correct}/${r.total} correct · ${fmtSec(r.median_latency_ms)}</li>`
+      ).join("");
+      return `<ul class="analysis-list">${rowBits}</ul>`;
+    }).join("");
+    const patternBits = (a.patterns || []).map((p) => {
+      const feat = _FEAT_LABELS[p.feature_key] || p.feature_key;
+      const val = p.feature_value === true ? "yes" : p.feature_value === false ? "no" : escapeHtml(String(p.feature_value));
+      return `<li><strong>${escapeHtml(p.skill_id)}</strong> (${feat}=${val}): ${p.ratio.toFixed(1)}× slower · ${fmtSec(p.group_median_ms)} vs ${fmtSec(p.baseline_ms)} (n=${p.n})</li>`;
+    }).join("");
     return `<div class="analysis">
       <h3 class="section">What we drilled</h3>
       <p class="analysis-intent">${escapeHtml(plan.intent || "This session had no fixed plan.")}</p>
@@ -709,6 +734,8 @@
       ${slowBits ? `<h3 class="section tight">Slowest correct answers</h3><ul class="analysis-list">${slowBits}</ul>` : ""}
       ${moved ? `<h3 class="section tight">What moved</h3><ul class="analysis-list">${moved}</ul>` : ""}
       ${weak ? `<h3 class="section tight">Still weak</h3><ul class="analysis-list">${weak}</ul>` : ""}
+      ${stratBits ? `<h3 class="section tight">This session by type</h3>${stratBits}` : ""}
+      ${patternBits ? `<h3 class="section tight">Patterns across all sessions</h3><ul class="analysis-list">${patternBits}</ul>` : ""}
       <p class="next-up">${escapeHtml(a.next_time || "")}</p>
     </div>`;
   }
