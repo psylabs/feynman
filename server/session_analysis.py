@@ -125,7 +125,7 @@ def exploratory_review_analysis(
 def pattern_analysis(attempts: list[dict]) -> list[dict]:
     correct = [
         a for a in attempts
-        if a.get("correct") and a.get("resolution_latency_ms") is not None
+        if a.get("correct") and a.get("resolution_latency_ms") is not None and a.get("skill_id")
     ]
     if not correct:
         return []

@@ -151,6 +151,9 @@ class Orchestrator:
                 skill_targets,
             )
 
+        if analysis is not None:
+            analysis["patterns"] = session_analysis.pattern_analysis(all_attempts)
+
         return {
             "session_id": sid,
             "mode": session["mode"],
