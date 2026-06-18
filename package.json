@@ -1,0 +1,17 @@
+{
+  "name": "feynman-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capacitor mobile wrapper for the Feynman personal cognitive trainer.",
+  "scripts": {
+    "cap:sync": "cap sync android",
+    "cap:open:android": "cap open android"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/core": "^8.4.0"
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Feynman</string>
+    <string name="title_activity_main">Feynman</string>
+    <string name="package_name">com.psylabs.feynman</string>
+    <string name="custom_url_scheme">com.psylabs.feynman</string>
+</resources>

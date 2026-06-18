@@ -1,0 +1,13 @@
+{
+  "appId": "com.psylabs.feynman",
+  "appName": "Feynman",
+  "webDir": "web",
+  "server": {
+    "url": "https://feynman.example.ts.net",
+    "cleartext": false,
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
