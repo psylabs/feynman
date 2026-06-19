@@ -169,6 +169,24 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
   color: #fff;
 }
 
+.typed-answer {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  margin: 20px 0 12px 0;
+}
+.typed-answer input {
+  min-width: 0;
+  font: inherit;
+  font-size: 18px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid #353841;
+  background: #14161a;
+  color: #d8d9dc;
+}
+.typed-answer input:focus { outline: none; border-color: #2563eb; }
+
 /* Debug toggle button — small, circular */
 #btn-debug-toggle {
   padding: 6px 10px;
@@ -358,6 +376,14 @@ table.metrics { margin-top: 4px; }
   font-family: ui-monospace, "SF Mono", "Menlo", monospace;
 }
 .version-indicator .vi-msg { color: #888; }
+
+.offline-status {
+  font-size: 11px;
+  color: #777;
+  margin-top: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.offline-status.pending { color: #c9b86d; }
 
 /* ---- in-session plan ---- */
 .session-plan {
@@ -661,6 +687,13 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
     padding: 22px;
     font-size: 16px;
     margin: 16px 0 12px 0;
+  }
+  .typed-answer {
+    grid-template-columns: 1fr;
+  }
+  .typed-answer input,
+  .typed-answer button {
+    width: 100%;
   }
   .actions.row { flex-wrap: wrap; }
 

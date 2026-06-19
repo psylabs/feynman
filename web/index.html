@@ -35,6 +35,7 @@
       </div>
       <div id="home-stats" class="home-stats hidden"></div>
       <div id="diagnosis-teaser" class="hidden"></div>
+      <div id="offline-status" class="offline-status hidden"></div>
       <div id="version-indicator" class="version-indicator hidden"></div>
       <div class="actions row">
         <button id="btn-quick-drill" class="primary">Quick drill</button>
@@ -56,6 +57,11 @@
       <div id="session-plan" class="session-plan hidden"></div>
       <div id="prompt"></div>
       <button id="btn-ptt" disabled>Press &amp; hold to answer</button>
+      <form id="typed-answer" class="typed-answer hidden">
+        <input id="typed-answer-input" type="text" inputmode="decimal" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Answer">
+        <button id="btn-submit-typed" class="primary" type="submit">Submit</button>
+        <button id="btn-skip-typed" class="secondary" type="button">Skip</button>
+      </form>
       <div id="status"></div>
       <div id="result"></div>
       <div id="feedback"></div>
@@ -113,6 +119,7 @@
 
   <script src="/config.js"></script>
   <script src="/grading.js"></script>
+  <script src="/offline.js"></script>
   <script src="/debug.js"></script>
   <script src="/users.js"></script>
   <script src="/app.js"></script>

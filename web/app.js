@@ -16,20 +16,33 @@
   let advanceTimer = null;
   let lastResult = null;
   let currentSessionPlan = null;
+  let sessionPosition = 0;
+  let sessionTargetQuestions = 0;
+  let offlineSession = false;
+  let offlineUserId = null;
+  let offlineQuestion = null;
+  let offlinePosition = 0;
+  let offlineTarget = 0;
+  let offlineReviewAttempts = [];
+  let offlineSyncInFlight = false;
+  let typedOnsetTs = null;
 
   // ---- screen switching --------------------------------------------------
 
   async function showScreen(id) {
     // Leaving an active session via nav: end it cleanly.
     if (sessionId && id !== "screen-session" && id !== "screen-review") {
-      try {
-        await fetch("/session/end", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId }),
-        });
-      } catch {}
+      if (!offlineSession) {
+        try {
+          await fetch("/session/end", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+        } catch {}
+      }
       sessionId = null;
+      resetOfflineSession();
     }
 
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
@@ -54,6 +67,54 @@
       : "You're in a browser — this only affects the installed app.";
   }
 
+  function resetOfflineSession() {
+    offlineSession = false;
+    offlineUserId = null;
+    offlineQuestion = null;
+    offlinePosition = 0;
+    offlineTarget = 0;
+    offlineReviewAttempts = [];
+    typedOnsetTs = null;
+  }
+
+  function offlineAvailable() {
+    return !!window.feynmanOffline?.isAvailable?.();
+  }
+
+  async function updateOfflineStatus(userId) {
+    const el = $("offline-status");
+    if (!el) return;
+    if (!userId || !offlineAvailable()) {
+      el.classList.add("hidden");
+      return;
+    }
+    try {
+      await window.feynmanOffline.init();
+      const s = await window.feynmanOffline.stats(userId);
+      el.textContent = `${s.seedRemaining} offline prompts · ${s.outboxPending} pending`;
+      el.classList.toggle("pending", s.outboxPending > 0);
+      el.classList.remove("hidden");
+    } catch {
+      el.classList.add("hidden");
+    }
+  }
+
+  async function backgroundOfflineSync(userId) {
+    if (!userId || !offlineAvailable() || offlineSyncInFlight) return;
+    offlineSyncInFlight = true;
+    try {
+      await window.feynmanOffline.init();
+      await window.feynmanOffline.flushOutbox(userId);
+      const s = await window.feynmanOffline.stats(userId);
+      if (s.seedRemaining < 10) await window.feynmanOffline.refreshSeedPack(userId, 50);
+    } catch (e) {
+      // Offline or backend unreachable. The visible status is refreshed below.
+    } finally {
+      offlineSyncInFlight = false;
+      updateOfflineStatus(userId);
+    }
+  }
+
   // ---- start screen state ------------------------------------------------
 
   function refreshStartScreen() {
@@ -62,13 +123,18 @@
     $("diagnosis-teaser").classList.add("hidden");
     $("home-stats").classList.add("hidden");
     loadVersionIndicator();
-    if (!user) return;
+    if (!user) {
+      updateOfflineStatus(null);
+      return;
+    }
     if (user.has_completed_eval) {
       $("eval-banner").classList.add("hidden");
     } else {
       $("eval-banner").classList.remove("hidden");
     }
     loadDiagnosisTeaser(user.id);
+    updateOfflineStatus(user.id);
+    backgroundOfflineSync(user.id);
   }
 
   async function loadVersionIndicator() {
@@ -203,19 +269,33 @@
     const user = window.feynmanUser?.getCurrent?.();
     if (!user) return alert("Pick a player first.");
     const body = { user_id: user.id, mode };
+    let targetQuestions = null;
     if (mode === "drill") {
       const n = fixedLength ?? parseInt(($("drill-length") || {}).value, 10);
-      if (Number.isFinite(n)) body.target_questions = n;
+      if (Number.isFinite(n)) {
+        body.target_questions = n;
+        targetQuestions = n;
+      }
+      backgroundOfflineSync(user.id);
     }
-    const r = await fetch("/session/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).then((res) => res.json());
+    let r;
+    try {
+      r = await fetch("/session/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((res) => res.json());
+    } catch {
+      if (mode === "drill") return startOfflineSession(user, targetQuestions || 5);
+      return alert("Could not reach the backend.");
+    }
     if (r.detail) return alert(r.detail);
+    resetOfflineSession();
     sessionId = r.session_id;
     currentMode = r.mode;
     currentSessionPlan = r.session_plan || null;
+    sessionPosition = 0;
+    sessionTargetQuestions = targetQuestions || 0;
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
     $("screen-session").classList.remove("hidden");
     $("mode-tag").textContent = currentMode === "eval" ? "Baseline" : "Drill";
@@ -226,7 +306,38 @@
     await nextQuestion();
   }
 
+  async function startOfflineSession(user, targetQuestions) {
+    if (!offlineAvailable()) return alert("Offline storage is not ready.");
+    try {
+      await window.feynmanOffline.init();
+      const seed = await window.feynmanOffline.nextSeed(user.id);
+      if (!seed) return alert("No offline prompts cached. Connect once, then try again.");
+    } catch {
+      return alert("Offline storage is not ready.");
+    }
+
+    resetOfflineSession();
+    offlineSession = true;
+    offlineUserId = user.id;
+    offlineTarget = targetQuestions || 5;
+    sessionPosition = 0;
+    sessionTargetQuestions = offlineTarget;
+    sessionId = `offline:${Date.now()}`;
+    currentMode = "drill";
+    currentSessionPlan = null;
+    document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
+    $("screen-session").classList.remove("hidden");
+    $("mode-tag").textContent = "Offline";
+    renderSessionPlan(null);
+    $("result").textContent = "";
+    $("result").className = "";
+    $("feedback").textContent = "";
+    await nextQuestion();
+  }
+
   async function nextQuestion() {
+    if (offlineSession) return nextOfflineQuestion();
+
     advancing = false;
     if (advanceTimer) {
       clearTimeout(advanceTimer);
@@ -240,13 +351,24 @@
     $("btn-ptt").disabled = true;
     $("prompt").textContent = "";
 
-    const r = await fetch("/session/next", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId }),
-    }).then((res) => res.json());
+    let r;
+    try {
+      r = await fetch("/session/next", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      }).then((res) => res.json());
+    } catch {
+      if (currentMode === "drill") return continueOfflineSession();
+      $("status").textContent = "Could not load the next question.";
+      return;
+    }
 
     currentQid = r.qid;
+    sessionPosition = r.position || sessionPosition;
+    sessionTargetQuestions = r.target_questions || sessionTargetQuestions;
+    hideTypedAnswer();
+    $("btn-ptt").classList.remove("hidden");
     $("prompt").textContent = r.prompt_text;
     $("position").textContent = `Question ${r.position} of ${r.target_questions}`;
 
@@ -264,6 +386,112 @@
       promptEndTs = Date.now() / 1000;
       $("status").textContent = "Audio blocked — answer now";
       $("btn-ptt").disabled = false;
+    }
+  }
+
+  function hideTypedAnswer() {
+    const form = $("typed-answer");
+    if (!form) return;
+    form.classList.add("hidden");
+    $("typed-answer-input").value = "";
+    $("typed-answer-input").disabled = true;
+    $("btn-submit-typed").disabled = true;
+    $("btn-skip-typed").disabled = true;
+  }
+
+  function showTypedAnswer(disabled) {
+    const form = $("typed-answer");
+    if (!form) return;
+    form.classList.remove("hidden");
+    $("typed-answer-input").disabled = !!disabled;
+    $("btn-submit-typed").disabled = !!disabled;
+    $("btn-skip-typed").disabled = !!disabled;
+    if (!disabled) setTimeout(() => $("typed-answer-input").focus(), 0);
+  }
+
+  async function continueOfflineSession() {
+    const user = window.feynmanUser?.getCurrent?.();
+    if (!user || !offlineAvailable()) {
+      $("status").textContent = "No offline prompts cached.";
+      return;
+    }
+    try {
+      await window.feynmanOffline.init();
+      const seed = await window.feynmanOffline.nextSeed(user.id);
+      if (!seed) {
+        $("status").textContent = "No offline prompts cached.";
+        return;
+      }
+    } catch {
+      $("status").textContent = "Offline storage is not ready.";
+      return;
+    }
+    offlineSession = true;
+    offlineUserId = user.id;
+    offlineTarget = sessionTargetQuestions || 5;
+    offlinePosition = sessionPosition;
+    offlineReviewAttempts = [];
+    offlineQuestion = null;
+    sessionId = `offline:${Date.now()}`;
+    $("mode-tag").textContent = "Offline";
+    renderSessionPlan(null);
+    await nextOfflineQuestion();
+  }
+
+  async function nextOfflineQuestion() {
+    advancing = false;
+    if (advanceTimer) {
+      clearTimeout(advanceTimer);
+      advanceTimer = null;
+    }
+    if (offlinePosition >= offlineTarget) return endSession();
+
+    $("result").textContent = "";
+    $("result").className = "";
+    $("feedback").textContent = "";
+    $("btn-next").classList.add("hidden");
+    $("btn-ptt").classList.add("hidden");
+    $("btn-ptt").disabled = true;
+    showTypedAnswer(true);
+    $("status").textContent = "Loading...";
+    $("prompt").textContent = "";
+
+    let seed;
+    try {
+      seed = await window.feynmanOffline.nextSeed(offlineUserId);
+    } catch {
+      $("status").textContent = "Offline storage is not ready.";
+      return;
+    }
+    if (!seed) return endSession();
+
+    offlineQuestion = seed;
+    currentQid = `offline:${seed.local_id}`;
+    offlinePosition += 1;
+    sessionPosition = offlinePosition;
+    $("prompt").textContent = seed.prompt_text;
+    $("position").textContent = `Question ${offlinePosition} of ${offlineTarget}`;
+    typedOnsetTs = null;
+
+    const audioSrc = seed.audio_data_url || apiUrl(seed.audio_url || "");
+    const enable = (message) => {
+      promptEndTs = Date.now() / 1000;
+      $("status").textContent = message;
+      showTypedAnswer(false);
+    };
+
+    if (!audioSrc) {
+      enable("Type answer");
+      return;
+    }
+    const audio = new Audio(audioSrc);
+    audio.playbackRate = 1.5;
+    $("status").textContent = "Listening...";
+    audio.addEventListener("ended", () => enable("Type answer"));
+    try {
+      await audio.play();
+    } catch {
+      enable("Type answer");
     }
   }
 
@@ -358,17 +586,7 @@
     lastResult = r;
     currentAttemptId = r.attempt_id || null;
 
-    let label, cls;
-    if (r.skipped) { label = "Skipped"; cls = "skipped"; }
-    else if (r.correct) { label = "✓ Correct"; cls = "correct"; }
-    else { label = "✗ Wrong"; cls = "wrong"; }
-    const detail = r.skipped ? "" : `  ·  you said ${fmt(r.parsed)}, expected ${fmt(r.expected)}`;
-    const timing = r.resolution_latency_ms != null ? `  ·  ${fmtSec(r.resolution_latency_ms)}` : "";
-    $("result").textContent = `${label}${detail}${timing}`;
-    $("result").className = cls;
-    $("status").textContent = `“${r.transcript || ""}”`;
-    $("feedback").textContent = r.feedback_pending ? "thinking…" : "";
-    $("btn-next").classList.remove("hidden");
+    renderAttemptResult(r);
 
     // Prefetch the next question while the user reads this result.
     // Fire-and-forget: failures fall back to the live /session/next path.
@@ -383,6 +601,78 @@
     if (advancing) return;
     advancing = true;
     const delay = r.feedback_pending ? 5000 : (r.correct ? 600 : 2000);
+    advanceTimer = setTimeout(advanceNow, delay);
+  }
+
+  function renderAttemptResult(r) {
+    let label, cls;
+    if (r.skipped) { label = "Skipped"; cls = "skipped"; }
+    else if (r.correct) { label = "✓ Correct"; cls = "correct"; }
+    else { label = "✗ Wrong"; cls = "wrong"; }
+    const detail = r.skipped ? "" : `  ·  you said ${fmt(r.parsed)}, expected ${fmt(r.expected)}`;
+    const timing = r.resolution_latency_ms != null ? `  ·  ${fmtSec(r.resolution_latency_ms)}` : "";
+    $("result").textContent = `${label}${detail}${timing}`;
+    $("result").className = cls;
+    $("status").textContent = r.skipped ? "Skipped." : `“${r.transcript || ""}”`;
+    $("feedback").textContent = r.feedback_pending ? "thinking…" : "";
+    $("btn-next").classList.remove("hidden");
+  }
+
+  async function submitTypedAnswer(rawAnswer) {
+    if (!offlineSession || !offlineQuestion) return;
+    rawAnswer = (rawAnswer || "").trim();
+    if (!rawAnswer) {
+      $("typed-answer-input").focus();
+      return;
+    }
+
+    showTypedAnswer(true);
+    $("status").textContent = "Saving...";
+    const resolutionTs = Date.now() / 1000;
+    const onset = typedOnsetTs || promptEndTs || resolutionTs;
+    const built = window.buildOfflineAttempt(offlineQuestion, rawAnswer, {
+      promptEndTs: promptEndTs || onset,
+      onsetTs: onset,
+      resolutionTs,
+    });
+
+    try {
+      await window.feynmanOffline.queueAttempt(offlineUserId, built.attempt);
+      await window.feynmanOffline.markSeedUsed(offlineQuestion.local_id);
+    } catch {
+      $("status").textContent = "Could not save offline answer.";
+      showTypedAnswer(false);
+      return;
+    }
+
+    const r = {
+      ...built.result,
+      position: offlinePosition,
+      target_questions: offlineTarget,
+    };
+    lastResult = r;
+    currentAttemptId = null;
+    offlineReviewAttempts.push({
+      id: null,
+      position_in_session: offlinePosition,
+      skill_id: offlineQuestion.skill_id,
+      prompt_text: offlineQuestion.prompt_text,
+      parsed_answer: built.attempt.parsed_answer,
+      expected_answer: built.attempt.expected_answer,
+      correct: built.attempt.correct,
+      skipped: built.attempt.skipped,
+      resolution_latency_ms: built.attempt.resolution_latency_ms,
+      parameters: offlineQuestion.parameters || {},
+    });
+    offlineQuestion = null;
+    hideTypedAnswer();
+    renderAttemptResult(r);
+    updateOfflineStatus(offlineUserId);
+    backgroundOfflineSync(offlineUserId);
+
+    if (advancing) return;
+    advancing = true;
+    const delay = r.correct ? 600 : 1800;
     advanceTimer = setTimeout(advanceNow, delay);
   }
 
@@ -408,6 +698,23 @@
 
   async function endSession() {
     if (!sessionId) return;
+    if (offlineSession) {
+      const userId = offlineUserId;
+      const r = {
+        session_id: null,
+        mode: "drill",
+        attempts: offlineReviewAttempts,
+      };
+      renderReview(r);
+      document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
+      $("screen-review").classList.remove("hidden");
+      sessionId = null;
+      resetOfflineSession();
+      sessionPosition = 0;
+      sessionTargetQuestions = 0;
+      if (userId) backgroundOfflineSync(userId);
+      return;
+    }
     const endedSessionId = sessionId;
     const r = await fetch("/session/end", {
       method: "POST",
@@ -420,6 +727,8 @@
     $("screen-review").classList.remove("hidden");
     sessionId = null;
     currentSessionPlan = null;
+    sessionPosition = 0;
+    sessionTargetQuestions = 0;
     if (window.feynmanUser?.refreshFlags) window.feynmanUser.refreshFlags();
   }
 
@@ -976,6 +1285,15 @@
 
   // Pointer Events: works on touch, mouse, and pen consistently. Avoids the
   // touchstart-preventDefault passive-listener trap on Android Chrome.
+  $("typed-answer")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitTypedAnswer($("typed-answer-input").value);
+  });
+  $("typed-answer-input")?.addEventListener("input", () => {
+    if (!typedOnsetTs) typedOnsetTs = Date.now() / 1000;
+  });
+  $("btn-skip-typed")?.addEventListener("click", () => submitTypedAnswer("skip"));
+
   const ptt = $("btn-ptt");
   ptt.addEventListener("pointerdown", (e) => {
     e.preventDefault();
@@ -1065,6 +1383,11 @@
       document.body.classList.add("debug-collapsed");
     }
   }
+
+  window.feynmanOffline?.onOnline?.(() => {
+    const user = window.feynmanUser?.getCurrent?.();
+    if (user) backgroundOfflineSync(user.id);
+  });
 
   refreshStartScreen();
 })();
