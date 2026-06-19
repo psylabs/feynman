@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+node_modules/
 .DS_Store
 .idea/
 .vscode/
@@ -20,3 +21,6 @@ logs/
 *.webm
 .env
 docs/todo.md
+
+# TLS certs (private key) — never commit
+certs/
