@@ -147,6 +147,18 @@ Original plan (for reference):
 - `server/main.py` already derives the file suffix from the upload filename, so the server needs the transcode step, not a format hint.
 
 ### Phase 3 — Offline seeding (L) ← the main feature
+
+**Status (2026-06-19): server side DONE, client side remaining.**
+- ✅ `GET /seed-pack/{user_id}` — `server/seed_pack.py` (manifest with prompt,
+  expected, parameters, tolerance_rule, cached audio_url). Tested.
+- ✅ Offline grading port — `web/grading.js` (`gradeAnswer`), case-for-case
+  parity with `server/grader.py`.
+- ✅ `POST /session/attempts/bulk` — `Orchestrator.record_bulk_attempts`;
+  server re-grades + recomputes mastery. Tested.
+- ⬜ **Remaining (device-dependent):** client SQLite store + offline session
+  loop (below). Needs an APK build + airplane-mode testing.
+
+Detail (original):
 - Server: new endpoint `GET /seed-pack/{user_id}` (see "Offline seeding" above). Reuse `server/scheduler.py`, generators, and `server/tts.py`.
 - Client: SQLite schema for `skills`, `seed_pack`, `attempts_outbox`, `skill_state`. Migration runner.
 - Client: rewrite session loop in `web/app.js` to:
