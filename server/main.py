@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 # Load .env (if present) before any module reads OPENAI_API_KEY.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from server import diagnosis, tts  # noqa: E402
+from server import diagnosis, seed_pack, tts  # noqa: E402
 from server.events import EventBus  # noqa: E402
 from server.orchestrator import Orchestrator  # noqa: E402
 from server.storage import Storage  # noqa: E402
@@ -218,6 +218,17 @@ def leaderboard():
             for sid in storage.all_skill_ids()
         ],
     }
+
+
+@app.get("/seed-pack/{user_id}")
+def seed_pack_endpoint(user_id: str, n: int = 50):
+    """Pre-generate a batch of drill problems with cached TTS so the mobile app
+    can drill offline. Returns a manifest the client stores locally."""
+    if not storage.get_user(user_id):
+        raise HTTPException(404, "user not found")
+    pack = seed_pack.build_seed_pack(storage, user_id, n, bus.emit)
+    bus.emit("seed_pack.generated", user_id=user_id, count=pack["count"])
+    return pack
 
 
 @app.post("/session/start")
