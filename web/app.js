@@ -219,12 +219,15 @@
     const el = $("version-indicator");
     if (!el) return;
     try {
-      const v = await fetch("/version", { cache: "no-store" }).then((r) => r.json());
+      const v = window.feynmanVersion?.load
+        ? await window.feynmanVersion.load()
+        : await fetch("/version", { cache: "no-store" }).then((r) => r.json());
       if (!v || (!v.sha && !v.committed_at)) { el.classList.add("hidden"); return; }
       const when = v.committed_at ? fmtRelative(v.committed_at) : "";
       const sha = v.sha ? `<code>${escapeHtml(v.sha)}</code>` : "";
       const msg = v.message ? `<span class="vi-msg">${escapeHtml(v.message.slice(0, 100))}${v.message.length > 100 ? "…" : ""}</span>` : "";
-      el.innerHTML = `Updated ${escapeHtml(when)} · ${sha}${msg ? " — " + msg : ""}`;
+      const label = v.source === "app" ? "App updated" : "Server updated";
+      el.innerHTML = `${label} ${escapeHtml(when)} · ${sha}${msg ? " — " + msg : ""}`;
       el.classList.remove("hidden");
     } catch {
       el.classList.add("hidden");

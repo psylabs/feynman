@@ -1,3 +1,8 @@
+:root {
+  --topbar-height: 44px;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -5,11 +10,12 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   display: grid;
   grid-template-columns: 1fr 480px;
-  grid-template-rows: 44px 1fr;
+  grid-template-rows: calc(var(--topbar-height) + var(--safe-area-top)) 1fr;
   grid-template-areas:
     "topbar topbar"
     "main   debug";
   height: 100vh;
+  height: 100dvh;
   background: #0e0f12;
   color: #d8d9dc;
   overflow: hidden;
@@ -20,7 +26,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: var(--safe-area-top) 16px 0;
   border-bottom: 1px solid #1f2127;
   background: #0a0b0e;
 }

@@ -3,17 +3,11 @@ name: android-apk
 on:
   push:
     branches: [main]
-    paths:
-      - "android/**"
-      - "web/**"
-      - "package.json"
-      - "package-lock.json"
-      - "capacitor.config.json"
-      - ".github/workflows/android-apk.yml"
   pull_request:
     paths:
       - "android/**"
       - "web/**"
+      - "scripts/write-build-info.mjs"
       - "package.json"
       - "package-lock.json"
       - "capacitor.config.json"
@@ -58,6 +52,9 @@ jobs:
 
       - name: Install npm dependencies
         run: npm ci
+
+      - name: Write bundled build metadata
+        run: node scripts/write-build-info.mjs
 
       - name: Sync Capacitor Android project
         run: npx cap sync android
