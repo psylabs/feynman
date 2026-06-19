@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pip.feynman</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/pip/Documents/Projects/feynman/scripts/run-server.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/pip/Documents/Projects/feynman</string>
+
+  <!-- Start on login and respawn on crash. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <!-- macOS defaults RLIMIT_NOFILE to 256, too low under static+SSE load.
+       Belt-and-suspenders alongside _raise_fd_limit() in server/main.py. -->
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>4096</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/pip/Library/Logs/feynman-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/pip/Library/Logs/feynman-server.log</string>
+</dict>
+</plist>

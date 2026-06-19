@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pip.feynman.certrenew</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/pip/Documents/Projects/feynman/scripts/renew-cert.sh</string>
+  </array>
+
+  <!-- Weekly, Monday 04:30. tailscale cert no-ops unless the cert is near
+       expiry, so the backend only restarts when a real renewal happens. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>1</integer>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/pip/Library/Logs/feynman-certrenew.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/pip/Library/Logs/feynman-certrenew.log</string>
+</dict>
+</plist>
