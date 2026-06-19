@@ -33,6 +33,16 @@ DRILL_LENGTH_MIN = 3
 DRILL_LENGTH_MAX = 30
 
 
+def _to_float(v):
+    """Coerce JSON-supplied answers/expected values to float, or None."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 class Orchestrator:
     """Composes the turn lifecycle: scheduler -> generator -> TTS -> STT ->
     parser -> grader -> storage -> mastery.
@@ -421,6 +431,69 @@ class Orchestrator:
             "target_questions": target,
             "mode": q["mode"],
         }
+
+    # ---- offline sync ------------------------------------------------------
+
+    def record_bulk_attempts(self, user_id: str, attempts: list) -> dict:
+        """Flush a batch of attempts captured offline by the mobile app.
+
+        The server re-grades each attempt (it is the source of truth for
+        correctness and mastery) and recomputes mastery once per touched skill.
+        Each attempt carries a numeric ``parsed_answer`` (typed/parsed
+        on-device) or ``skipped``; audio-only offline answers are out of scope.
+        All attempts in a batch are grouped under one synthetic drill session.
+        """
+        sid = self.storage.create_session(user_id, "drill")
+        recorded = []
+        skills_touched: dict[str, int] = {}
+
+        for i, a in enumerate(attempts, start=1):
+            skill_id = a.get("skill_id")
+            skill = self.storage.get_skill(skill_id) if skill_id else None
+            expected = _to_float(a.get("expected_answer", a.get("expected")))
+            if not skill or expected is None:
+                recorded.append({"skill_id": skill_id, "recorded": False, "reason": "unknown_skill_or_expected"})
+                continue
+
+            skipped = bool(a.get("skipped"))
+            parsed_val = _to_float(a.get("parsed_answer"))
+            if skipped:
+                verdict = {"correct": False, "error_magnitude": None, "rule": "skipped"}
+            else:
+                verdict = grader.grade(parsed_val, expected, skill["tolerance"])
+
+            attempt_id = self.storage.insert_attempt({
+                "session_id": sid,
+                "skill_id": skill_id,
+                "position_in_session": i,
+                "prompt_text": a.get("prompt_text", ""),
+                "prompt_audio_ms": a.get("audio_duration_ms"),
+                "onset_latency_ms": a.get("onset_latency_ms"),
+                "resolution_latency_ms": a.get("resolution_latency_ms"),
+                "raw_transcript": a.get("raw_transcript", ""),
+                "parsed_answer": parsed_val,
+                "expected_answer": expected,
+                "correct": verdict["correct"],
+                "error_magnitude": verdict["error_magnitude"],
+                "skipped": skipped,
+                "parameters": a.get("parameters") or {},
+                "notes": "offline_sync",
+            })
+            recorded.append({
+                "attempt_id": attempt_id,
+                "skill_id": skill_id,
+                "correct": verdict["correct"],
+                "rule": verdict["rule"],
+            })
+            skills_touched[skill_id] = skill["target_latency_ms"]
+
+        for skill_id, target_ms in skills_touched.items():
+            mastery.update(self.storage, user_id, skill_id, target_ms, self.bus.emit)
+
+        self.storage.end_session(sid)
+        synced = sum(1 for r in recorded if r.get("attempt_id") is not None)
+        self.bus.emit("attempts.bulk_synced", user_id=user_id, count=synced, session_id=sid)
+        return {"session_id": sid, "synced": synced, "attempts": recorded}
 
     # ---- async feedback ----------------------------------------------------
 

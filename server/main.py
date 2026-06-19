@@ -231,6 +231,19 @@ def seed_pack_endpoint(user_id: str, n: int = 50):
     return pack
 
 
+@app.post("/session/attempts/bulk")
+def attempts_bulk(payload: dict):
+    """Flush attempts the mobile app captured offline. The server re-grades and
+    updates mastery — it is authoritative for both."""
+    user_id = payload.get("user_id")
+    if not user_id or not storage.get_user(user_id):
+        raise HTTPException(404, "user not found")
+    attempts = payload.get("attempts")
+    if not isinstance(attempts, list):
+        raise HTTPException(400, "attempts must be a list")
+    return orch.record_bulk_attempts(user_id, attempts)
+
+
 @app.post("/session/start")
 def session_start(payload: dict):
     user_id = payload.get("user_id")
