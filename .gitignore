@@ -21,3 +21,6 @@ logs/
 *.webm
 .env
 docs/todo.md
+
+# TLS certs (private key) — never commit
+certs/

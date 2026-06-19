@@ -14,6 +14,7 @@ import yaml
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 # Load .env (if present) before any module reads OPENAI_API_KEY.
@@ -81,6 +82,18 @@ _purge_old_answers()
 VERSION_INFO = _git_version_info()
 
 app = FastAPI(title="Feynman")
+
+# The bundled mobile app serves its UI from https://localhost (Android) or
+# capacitor://localhost (iOS) and calls this backend cross-origin over the
+# Tailscale HTTPS hostname. Allow those origins. No credentials are used (the
+# app has no auth), so a permissive origin regex is fine for personal use.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^(https?://localhost(:\d+)?|capacitor://localhost)$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 bus = EventBus(LOG_DIR)
 storage = Storage(DATA_DIR / "feynman.db")
 

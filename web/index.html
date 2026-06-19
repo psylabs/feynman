@@ -95,13 +95,7 @@
     <div id="events"></div>
   </aside>
 
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
-      });
-    }
-  </script>
+  <script src="/config.js"></script>
   <script src="/debug.js"></script>
   <script src="/users.js"></script>
   <script src="/app.js"></script>

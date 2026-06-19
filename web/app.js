@@ -239,7 +239,7 @@
     $("prompt").textContent = r.prompt_text;
     $("position").textContent = `Question ${r.position} of ${r.target_questions}`;
 
-    const audio = new Audio(r.audio_url);
+    const audio = new Audio(apiUrl(r.audio_url));
     $("status").textContent = "Listening…";
     audio.addEventListener("ended", () => {
       promptEndTs = Date.now() / 1000;
