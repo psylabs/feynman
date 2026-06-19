@@ -41,6 +41,17 @@
     if (id === "screen-profile") loadProfile();
     if (id === "screen-leaderboard") loadLeaderboard();
     if (id === "screen-start") refreshStartScreen();
+    if (id === "screen-settings") loadSettings();
+  }
+
+  // ---- settings ----------------------------------------------------------
+
+  function loadSettings() {
+    const input = $("setting-api-base");
+    if (input) input.value = window.feynmanSettings?.getApiBase?.() || "";
+    $("settings-status").textContent = window.feynmanSettings?.isBundled
+      ? ""
+      : "You're in a browser — this only affects the installed app.";
   }
 
   // ---- start screen state ------------------------------------------------
@@ -1017,6 +1028,29 @@
 
   document.querySelectorAll(".navlink").forEach((b) => {
     b.addEventListener("click", () => showScreen(b.dataset.screen));
+  });
+
+  // Settings screen.
+  $("btn-settings")?.addEventListener("click", () => showScreen("screen-settings"));
+  $("btn-settings-save")?.addEventListener("click", () => {
+    const saved = window.feynmanSettings.setApiBase($("setting-api-base").value);
+    $("setting-api-base").value = saved;
+    $("settings-status").textContent = "Saved.";
+  });
+  $("btn-settings-reset")?.addEventListener("click", () => {
+    const def = window.feynmanSettings.getDefaultApiBase();
+    window.feynmanSettings.setApiBase("");
+    $("setting-api-base").value = def;
+    $("settings-status").textContent = "Reset to default.";
+  });
+  $("btn-settings-test")?.addEventListener("click", async () => {
+    $("settings-status").textContent = "Testing…";
+    try {
+      const v = await window.feynmanSettings.test($("setting-api-base").value);
+      $("settings-status").textContent = `Connected ✓ — backend at commit ${v.sha || "?"}`;
+    } catch (e) {
+      $("settings-status").textContent = `Failed: ${e.message || e}`;
+    }
   });
 
   // Debug pane toggle (visible everywhere; collapses the right column on

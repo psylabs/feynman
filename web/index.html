@@ -19,6 +19,7 @@
       <button class="navlink" data-screen="screen-leaderboard">Leaderboard</button>
     </nav>
     <div id="user-picker">
+      <button id="btn-settings" class="user-button" aria-label="Settings">⚙</button>
       <button id="btn-debug-toggle" class="user-button" aria-label="Toggle debug pane">≡</button>
       <button id="btn-user" class="user-button">Loading…</button>
       <div id="user-menu" class="user-menu hidden"></div>
@@ -81,6 +82,21 @@
     <section id="screen-leaderboard" class="screen hidden">
       <h2>Leaderboard</h2>
       <div id="leaderboard-content"></div>
+    </section>
+
+    <section id="screen-settings" class="screen hidden">
+      <h2>Settings</h2>
+      <div class="settings-group">
+        <label for="setting-api-base">Backend URL</label>
+        <p class="muted small">The installed app uses this to reach the Mac mini. Changes take effect immediately.</p>
+        <input id="setting-api-base" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://host.ts.net:8765">
+        <div class="actions row">
+          <button id="btn-settings-save" class="primary">Save</button>
+          <button id="btn-settings-test" class="secondary">Test connection</button>
+          <button id="btn-settings-reset" class="secondary">Reset to default</button>
+        </div>
+        <div id="settings-status" class="muted small"></div>
+      </div>
     </section>
   </main>
 
