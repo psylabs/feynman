@@ -75,4 +75,46 @@ If any staged file is ambiguous, stop and ask before committing.
 
 ---
 
+## Project gotchas (Feynman mobile + Mac mini backend)
+
+Hard-won notes for future agents working on the Capacitor mobile migration.
+
+### Environment
+- **The dev machine IS the backend host** — the Mac mini, tailnet FQDN
+  `pips-mac-mini.tail72bfb3.ts.net`. The target phone is `motorola-razr-2025`
+  on the same tailnet.
+- **`.venv` is uv-managed and has no `pip`/`pytest`.** Run the suite with
+  `uv run --with pytest pytest`. Plain `python -m pytest` / `pip` will fail.
+- **`gh` is not installed.** Can't create PRs via CLI; merge locally and push.
+- **Android toolchain (JDK/SDK/Android Studio) is not installed** by default.
+  Building the APK is done in Android Studio (`npx cap open android`).
+
+### Tailscale is the App Store (sandboxed) build — this matters
+- CLI lives at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
+- **`tailscale serve` hangs silently** (sandbox can't bind :443). Don't use it.
+- **`tailscale cert` can only write to `~/Downloads`.** Other paths — even
+  absolute repo paths — fail with `operation not permitted` (sandbox redirect).
+  Mint into `~/Downloads`, then `mv` the files into the repo.
+- HTTPS certs must first be enabled in the tailnet admin console
+  (login.tailscale.com/admin/dns → Enable HTTPS), else you get
+  `your Tailscale account does not support getting TLS certs`.
+
+### Mobile architecture (Phase 0, on `main` as of 3f9b1f6)
+- The APK **bundles** `web/` and serves it from `https://localhost` (a secure
+  context, so the mic works). API calls go **cross-origin** to the backend over
+  the Tailscale HTTPS hostname.
+- `web/config.js` (loads first) rewrites `/`-prefixed `fetch`/`EventSource`
+  URLs and TTS `audio_url` (via `apiUrl()`) to the backend base, and gates the
+  service worker to browser-only. `server/main.py` has a CORS regex for
+  `https?://localhost` and `capacitor://localhost`.
+- The backend base is **hardcoded** in `config.js` (`FEYNMAN_API_BASE`). Moving
+  it to an in-app settings screen is Phase 1.
+- Run the backend with TLS:
+  `uvicorn server.main:app --host 0.0.0.0 --port 8765 --ssl-certfile certs/feynman.crt --ssl-keyfile certs/feynman.key`
+- **Certs live in gitignored `certs/` and expire ~90 days** (Let's Encrypt;
+  current expiry 2026-09-16). Re-mint with `tailscale cert` before then.
+- After changing `web/` or `capacitor.config.json`, run `npx cap sync android`.
+
+---
+
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
