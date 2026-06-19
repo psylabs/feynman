@@ -93,6 +93,13 @@ class Storage:
                 "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
             )
 
+            attempt_cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(attempts)").fetchall()
+            }
+            if "answer_mode" not in attempt_cols:
+                conn.execute("ALTER TABLE attempts ADD COLUMN answer_mode TEXT")
+
     # ---- users -------------------------------------------------------------
 
     def list_users(self) -> list[dict]:
@@ -294,9 +301,9 @@ class Storage:
                 INSERT INTO attempts (
                     session_id, skill_id, position_in_session, prompt_text, prompt_audio_ms,
                     prompt_end_ts, onset_ts, resolution_ts, onset_latency_ms, resolution_latency_ms,
-                    raw_transcript, parsed_answer, expected_answer, correct, error_magnitude,
+                    raw_transcript, parsed_answer, answer_mode, expected_answer, correct, error_magnitude,
                     skipped, parameters, notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     a["session_id"],
@@ -311,6 +318,7 @@ class Storage:
                     a.get("resolution_latency_ms"),
                     a.get("raw_transcript"),
                     a.get("parsed_answer"),
+                    a.get("answer_mode"),
                     a["expected_answer"],
                     int(bool(a["correct"])) if a.get("correct") is not None else None,
                     a.get("error_magnitude"),

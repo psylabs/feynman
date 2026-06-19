@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   resolution_latency_ms INTEGER,
   raw_transcript TEXT,
   parsed_answer REAL,
+  answer_mode TEXT,
   expected_answer REAL NOT NULL,
   correct INTEGER,
   error_magnitude REAL,

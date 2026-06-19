@@ -146,6 +146,7 @@ test("offline attempts are queued as bulk-sync payloads and removed after sync",
       prompt_text: "What is 2 plus 2?",
       expected_answer: 4,
       parsed_answer: 4,
+      answer_mode: "typed",
       raw_transcript: "4",
       skipped: false,
       correct: true,
@@ -310,6 +311,7 @@ test("typed offline answers build the same attempt shape the server bulk endpoin
   assert.equal(built.attempt.skill_id, "add");
   assert.equal(built.attempt.expected_answer, 4);
   assert.equal(built.attempt.parsed_answer, 4);
+  assert.equal(built.attempt.answer_mode, "typed");
   assert.equal(built.attempt.skipped, false);
   assert.equal(built.attempt.onset_latency_ms, 200);
   assert.equal(built.attempt.resolution_latency_ms, 1750);

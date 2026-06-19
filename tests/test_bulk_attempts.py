@@ -64,6 +64,35 @@ class BulkAttemptsTest(unittest.TestCase):
         self.assertEqual(res["synced"], 1)
         self.assertEqual(self.storage.inserted[0]["correct"], True)
 
+    @patch("server.mastery.update")
+    def test_records_offline_attempts_as_typed(self, _m):
+        self.orch.record_bulk_attempts(
+            "user-1", [{"skill_id": "add", "expected_answer": 4, "parsed_answer": 4}]
+        )
+
+        self.assertEqual(self.storage.inserted[0]["answer_mode"], "typed")
+
+    @patch("server.stt.transcribe", return_value={"text": "4"})
+    @patch("server.mastery.update")
+    def test_records_online_audio_attempts_as_voice(self, _mastery, _stt):
+        sid = "sess-1"
+        self.orch._sessions[sid] = {"target": 5}
+        self.orch._active[sid] = {
+            "qid": "q1",
+            "user_id": "user-1",
+            "skill_id": "add",
+            "position": 1,
+            "prompt": "What is 2 plus 2?",
+            "audio_duration_ms": 900,
+            "expected": 4,
+            "parameters": {"a": 2, "b": 2},
+            "mode": "drill",
+        }
+
+        self.orch.submit_answer(sid, "q1", "/tmp/answer.wav", 10.0, 10.2, 11.5)
+
+        self.assertEqual(self.storage.inserted[0]["answer_mode"], "voice")
+
 
 if __name__ == "__main__":
     unittest.main()
