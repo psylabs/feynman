@@ -2,31 +2,78 @@
 // manages the top-right dropdown and "+ Add player" flow.
 (function () {
   const STORAGE_KEY = "feynman.user_id";
+  const USERS_CACHE_KEY = "feynman.users_cache";
   const $ = (id) => document.getElementById(id);
 
   const state = {
     users: [],
     currentId: null,
+    loadError: null,
   };
 
   function current() {
     return state.users.find((u) => u.id === state.currentId) || null;
   }
 
-  async function fetchUsers() {
-    state.users = await fetch("/users").then((r) => r.json());
-    let stored = localStorage.getItem(STORAGE_KEY);
-    if (!state.users.find((u) => u.id === stored)) stored = null;
-    if (!stored && state.users.length > 0) stored = state.users[0].id;
+  function storedUserId() {
+    try { return localStorage.getItem(STORAGE_KEY) || ""; } catch { return ""; }
+  }
+
+  function readCachedUsers() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(USERS_CACHE_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed.filter((u) => u && u.id) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeCachedUsers(users) {
+    try { localStorage.setItem(USERS_CACHE_KEY, JSON.stringify(users || [])); } catch {}
+  }
+
+  function fallbackUsers() {
+    const cached = readCachedUsers();
+    if (cached.length) return cached;
+    const stored = storedUserId();
+    return stored ? [{ id: stored, name: "You", has_completed_eval: true, cached: true }] : [];
+  }
+
+  function chooseCurrent(users) {
+    let stored = storedUserId();
+    if (!users.find((u) => u.id === stored)) stored = null;
+    if (!stored && users.length > 0) stored = users[0].id;
     state.currentId = stored;
     if (stored) localStorage.setItem(STORAGE_KEY, stored);
+  }
+
+  function useFallbackUsers() {
+    state.users = fallbackUsers();
+    chooseCurrent(state.users);
+  }
+
+  async function fetchUsers() {
+    try {
+      const res = await fetch("/users");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const users = await res.json();
+      if (!Array.isArray(users)) throw new Error("invalid users response");
+      state.users = users;
+      state.loadError = null;
+      chooseCurrent(state.users);
+      writeCachedUsers(state.users);
+    } catch (e) {
+      state.loadError = e;
+      useFallbackUsers();
+    }
     renderPicker();
     notifyChange();
+    return state.users;
   }
 
   function renderPicker() {
     const u = current();
-    $("btn-user").textContent = u ? `${u.name} ▾` : "No users";
+    $("btn-user").textContent = u ? `${u.name} ▾` : state.loadError ? "Server offline" : "No users";
     const menu = $("user-menu");
     menu.innerHTML = "";
     for (const player of state.users) {
@@ -39,6 +86,16 @@
         closeMenu();
       });
       menu.appendChild(row);
+    }
+    if (state.loadError) {
+      const retry = document.createElement("button");
+      retry.className = "menu-row";
+      retry.textContent = "Retry connection";
+      retry.addEventListener("click", () => {
+        fetchUsers();
+        closeMenu();
+      });
+      menu.appendChild(retry);
     }
     const sep = document.createElement("div");
     sep.className = "menu-sep";
@@ -72,6 +129,8 @@
   function setCurrent(id) {
     state.currentId = id;
     localStorage.setItem(STORAGE_KEY, id);
+    const users = state.users.filter((u) => u && u.id);
+    if (users.length) writeCachedUsers(users);
     renderPicker();
     notifyChange();
   }
@@ -101,10 +160,7 @@
     list: () => state.users,
     refresh: fetchUsers,
     refreshFlags: async () => {
-      const fresh = await fetch("/users").then((r) => r.json());
-      state.users = fresh;
-      renderPicker();
-      notifyChange();
+      await fetchUsers();
     },
   };
 
@@ -116,5 +172,13 @@
     if (!e.target.closest("#user-picker")) closeMenu();
   });
 
-  fetchUsers();
+  window.addEventListener("online", () => fetchUsers());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.loadError) fetchUsers();
+  });
+
+  useFallbackUsers();
+  renderPicker();
+  notifyChange();
+  window.feynmanUser.ready = fetchUsers();
 })();
