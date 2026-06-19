@@ -148,26 +148,47 @@ Original plan (for reference):
 
 ### Phase 3 — Offline seeding (L) ← the main feature
 
-**Status (2026-06-19): server side DONE, client side remaining.**
+**Status (2026-06-19): Android offline drill loop smoke-tested; sync coverage incomplete.**
 - ✅ `GET /seed-pack/{user_id}` — `server/seed_pack.py` (manifest with prompt,
   expected, parameters, tolerance_rule, cached audio_url). Tested.
 - ✅ Offline grading port — `web/grading.js` (`gradeAnswer`), case-for-case
   parity with `server/grader.py`.
 - ✅ `POST /session/attempts/bulk` — `Orchestrator.record_bulk_attempts`;
   server re-grades + recomputes mastery. Tested.
-- ⬜ **Remaining (device-dependent):** client SQLite store + offline session
-  loop (below). Needs an APK build + airplane-mode testing.
+- ✅ Android client SQLite store for `seed_pack` + `attempts_outbox`; seed refresh
+  stores prompt audio as local data URLs.
+- ✅ Offline typed-answer drill loop in `web/app.js`, with `@capacitor/network`
+  reconnect handling and background flush.
+- ✅ Airplane-mode smoke test on Android: foreground refresh loaded 50 prompts,
+  airplane-mode drill continued smoothly, prompt audio played, and attempts
+  queued locally.
+- ✅ GitHub Actions debug APK workflow exists and builds an artifact from `main`.
+- ⬜ **Remaining:** all values written in offline mode must sync when the app is
+  online again. Today that is true for drill attempts only; optional end-of-review
+  feedback (`thumbs`/reason) is still online-only and is not queued locally.
 
-Detail (original):
-- Server: new endpoint `GET /seed-pack/{user_id}` (see "Offline seeding" above). Reuse `server/scheduler.py`, generators, and `server/tts.py`.
-- Client: SQLite schema for `skills`, `seed_pack`, `attempts_outbox`, `skill_state`. Migration runner.
-- Client: rewrite session loop in `web/app.js` to:
-  - Detect online state (`@capacitor/network`).
-  - Offline: read next problem from `seed_pack`, play bundled audio, capture answer, write to `attempts_outbox` with timestamps.
-  - Online: existing flow, with attempts also written to outbox-then-flush so the code path is one.
-- Sync: on reconnect, `POST /session/attempts/bulk` flushes outbox; server runs Whisper on any audio-only attempts and updates `skill_state`.
-- Grading logic: port the tolerance check from `server/` (it's a small piece of code) to JS so offline grading is immediate. Server still re-grades on sync as source of truth.
-- AI feedback gracefully degraded offline: store "pending" marker, request feedback on next sync.
+Current shape:
+- Server: `GET /seed-pack/{user_id}` reuses the scheduler, generators, and TTS
+  cache; `POST /session/attempts/bulk` accepts queued attempts and recomputes
+  mastery.
+- Client: SQLite currently persists `seed_pack` and `attempts_outbox`, not a full
+  `skills` or `skill_state` mirror.
+- Client: offline mode is a typed-answer fallback. Voice STT remains online-only;
+  audio answers can be revisited later if buffering audio becomes worth it.
+- Sync: one outbox flush currently sends attempt records on app start,
+  foreground/network reconnect, and after online session progress.
+
+Next sync requirement:
+- All app values created while offline should use one durable local write path
+  and one flush path, not scattered event hooks per feature. The likely shape is
+  a typed outbox record (`attempt`, `review_feedback`, future settings/state)
+  plus a single `flushOutbox()` that runs on startup, foreground, and network
+  reconnect.
+- Prefer doing this as one client sync step with one server bulk endpoint or a
+  small record-type router, instead of separate hooks for every UI control.
+- Investigate whether any part can be handled server-side without a new app
+  build. Expectation: unlikely for client-side queuing, because an old APK cannot
+  persist or flush fields it never writes locally.
 
 ### Phase 4 — Local notifications (S)
 - One screen of UI to schedule "morning seed-pack at 6 AM" + "if no drill by 6 PM, nudge."
@@ -201,7 +222,7 @@ This is the deep Python work, the actually interesting bit. Doesn't depend on or
 - **No auth today.** A native app on cellular reaching the Mac mini over Tailscale is fine for personal use. Don't add auth until this is ever exposed beyond yourself. CORS open to the specific Tailscale hostname is sufficient.
 - **The service worker may need to be disabled inside the Capacitor WebView.** Capacitor serves from `capacitor://localhost`; SW scope semantics can get weird. Plan to gate SW registration on `!Capacitor.isNativePlatform()`. Nothing is lost — the app shell is cached by the WebView's normal disk cache.
 - **Pre-rendered TTS bloats the seed pack.** 200 problems × ~50KB of cached TTS audio ≈ 10MB per morning sync. Acceptable on Wi-Fi. Consider on-device TTS (`@capacitor-community/text-to-speech`) as a fallback for prompts whose audio failed to bundle.
-- **Don't build "real" sync** (CRDT, vector clocks, merge resolution) yet. The scheduler is the source of truth for what to drill, the server is the source of truth for mastery, attempts are append-only. A simple "flush outbox, server is authoritative for `skill_state`" model is enough.
+- **Don't build "real" sync** (CRDT, vector clocks, merge resolution) yet. The scheduler is the source of truth for what to drill, the server is the source of truth for mastery, attempts are append-only. A simple "write every offline-created value to an outbox, flush it once, then let the server stay authoritative for `skill_state`" model is enough.
 - **The managed-agent vision is the actual interesting work.** The mobile migration is plumbing. Don't let the mobile track block the agent track — they can run in parallel; the agent ships behind an online-only "Coach" screen.
 - **"Everything else is theatre."** The single non-negotiable success metric here is: do you actually drill on the train? Phases 0-4 deliver that. Phase 5 is sugar. Phase 6 is the real intellectual investment.
 
@@ -209,8 +230,8 @@ This is the deep Python work, the actually interesting bit. Doesn't depend on or
 
 End-to-end test once the migration phases complete:
 
-1. **Connectivity loss test:** Drill a session on Wi-Fi. Toggle airplane mode mid-session. Confirm the next prompt comes from the seeded pack, audio plays, answer is captured, attempt sits in outbox.
-2. **Reconnect test:** Disable airplane mode. Confirm outbox flushes within 30s, `skill_state` updates server-side (visible on Profile screen).
+1. **Connectivity loss test:** ✅ Android smoke test passed on June 19, 2026: after foregrounding, the app loaded 50 prompts; airplane-mode drill continued smoothly and prompt audio played.
+2. **Reconnect test:** Confirm queued attempts flush within 30s, pending count returns to zero, and `skill_state` updates server-side (visible on Profile screen). Repeat once feedback is added to the shared outbox.
 3. **Morning seed test:** Schedule the local notification for +2 min from now. Background the app. Confirm notification fires, tapping it triggers sync, new seed pack lands in SQLite.
 4. **iOS mic test:** Cold install on a phone with the Capacitor app *deleted and reinstalled*. Confirm permission prompt fires on first record, recording is immediate, Whisper transcription accuracy is comparable to today's Tailscale-Safari baseline (eyeball 10 attempts).
 5. **Android volume PTT:** Drill with volume keys, confirm press/release map to record/stop.

@@ -45,6 +45,17 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Prepare debug signing key
+        env:
+          ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_DEBUG_KEYSTORE_BASE64 is not set. Add the Mac mini ~/.android/debug.keystore as a repository secret so GitHub APKs can update local installs."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/android-signing"
+          printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/android-signing/debug.keystore"
+
       - name: Install npm dependencies
         run: npm ci
 
@@ -53,6 +64,11 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
+        env:
+          ANDROID_DEBUG_KEYSTORE: ${{ runner.temp }}/android-signing/debug.keystore
+          ANDROID_DEBUG_KEYSTORE_PASSWORD: android
+          ANDROID_DEBUG_KEY_ALIAS: androiddebugkey
+          ANDROID_DEBUG_KEY_PASSWORD: android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace

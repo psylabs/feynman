@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 
+def ciDebugKeystorePath = System.getenv("ANDROID_DEBUG_KEYSTORE")
+def hasCiDebugKeystore = ciDebugKeystorePath != null && ciDebugKeystorePath.trim()
+
 android {
     namespace = "com.psylabs.feynman"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,7 +19,22 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (hasCiDebugKeystore) {
+            ciDebug {
+                storeFile file(ciDebugKeystorePath)
+                storePassword System.getenv("ANDROID_DEBUG_KEYSTORE_PASSWORD") ?: "android"
+                keyAlias System.getenv("ANDROID_DEBUG_KEY_ALIAS") ?: "androiddebugkey"
+                keyPassword System.getenv("ANDROID_DEBUG_KEY_PASSWORD") ?: "android"
+            }
+        }
+    }
     buildTypes {
+        debug {
+            if (hasCiDebugKeystore) {
+                signingConfig signingConfigs.ciDebug
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
