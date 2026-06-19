@@ -24,6 +24,7 @@ from server import diagnosis, seed_pack, tts  # noqa: E402
 from server.events import EventBus  # noqa: E402
 from server.orchestrator import Orchestrator  # noqa: E402
 from server.storage import Storage  # noqa: E402
+from server.sync import sync_records  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
@@ -242,6 +243,18 @@ def attempts_bulk(payload: dict):
     if not isinstance(attempts, list):
         raise HTTPException(400, "attempts must be a list")
     return orch.record_bulk_attempts(user_id, attempts)
+
+
+@app.post("/sync/bulk")
+def sync_bulk(payload: dict):
+    """Flush all offline-created mobile records in one request."""
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise HTTPException(400, "records must be a list")
+    return sync_records(orch, storage, bus, user_id, records)
 
 
 @app.post("/session/start")

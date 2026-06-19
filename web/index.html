@@ -36,6 +36,7 @@
       <div id="home-stats" class="home-stats hidden"></div>
       <div id="diagnosis-teaser" class="hidden"></div>
       <div id="offline-status" class="offline-status hidden"></div>
+      <div id="sync-status" class="sync-status hidden"></div>
       <div id="version-indicator" class="version-indicator hidden"></div>
       <div class="actions row">
         <button id="btn-quick-drill" class="primary">Quick drill</button>
@@ -103,6 +104,14 @@
         </div>
         <div id="settings-status" class="muted small"></div>
       </div>
+      <div class="settings-group">
+        <label>Reminders</label>
+        <div class="actions row">
+          <button id="btn-notifications-enable" class="primary">Enable reminders</button>
+          <button id="btn-notifications-disable" class="secondary">Turn off reminders</button>
+        </div>
+        <div id="notifications-status" class="muted small"></div>
+      </div>
     </section>
   </main>
 
@@ -120,6 +129,7 @@
   <script src="/config.js"></script>
   <script src="/grading.js"></script>
   <script src="/offline.js"></script>
+  <script src="/notifications.js"></script>
   <script src="/debug.js"></script>
   <script src="/users.js"></script>
   <script src="/app.js"></script>

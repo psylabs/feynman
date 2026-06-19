@@ -482,6 +482,7 @@ class Orchestrator:
             recorded.append({
                 "attempt_id": attempt_id,
                 "skill_id": skill_id,
+                "client_id": a.get("client_id"),
                 "correct": verdict["correct"],
                 "rule": verdict["rule"],
             })

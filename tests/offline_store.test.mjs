@@ -93,7 +93,8 @@ test("seed packs are stored in SQLite and dequeued once", async () => {
   await store.init();
   await store.saveSeedPack(samplePack());
 
-  assert.deepEqual(plain(await store.stats("u1")), { seedRemaining: 2, outboxPending: 0 });
+  assert.equal((await store.stats("u1")).seedRemaining, 2);
+  assert.equal((await store.stats("u1")).outboxPending, 0);
 
   const first = await store.nextSeed("u1");
   assert.equal(first.skill_id, "add");
@@ -105,7 +106,8 @@ test("seed packs are stored in SQLite and dequeued once", async () => {
   await store.markSeedUsed(first.local_id);
   const second = await store.nextSeed("u1");
   assert.equal(second.skill_id, "money");
-  assert.deepEqual(plain(await store.stats("u1")), { seedRemaining: 1, outboxPending: 0 });
+  assert.equal((await store.stats("u1")).seedRemaining, 1);
+  assert.equal((await store.stats("u1")).outboxPending, 0);
 });
 
 test("offline attempts are queued as bulk-sync payloads and removed after sync", async () => {
@@ -115,7 +117,7 @@ test("offline attempts are queued as bulk-sync payloads and removed after sync",
   await store.saveSeedPack(samplePack());
 
   const seed = await store.nextSeed("u1");
-  const queuedId = await store.queueAttempt("u1", {
+  const queued = await store.queueAttempt("u1", {
     skill_id: seed.skill_id,
     prompt_text: seed.prompt_text,
     expected_answer: seed.expected,
@@ -132,9 +134,68 @@ test("offline attempts are queued as bulk-sync payloads and removed after sync",
 
   const pending = await store.pendingOutbox("u1");
   assert.equal(pending.length, 1);
-  assert.equal(pending[0].outbox_id, queuedId);
+  assert.equal(pending[0].local_id, queued.clientId);
   assert.deepEqual(plain(pending[0]), {
-    outbox_id: queuedId,
+    outbox_id: queued.outboxId,
+    local_id: queued.clientId,
+    user_id: "u1",
+    kind: "attempt",
+    payload: {
+      client_id: queued.clientId,
+      skill_id: "add",
+      prompt_text: "What is 2 plus 2?",
+      expected_answer: 4,
+      parsed_answer: 4,
+      raw_transcript: "4",
+      skipped: false,
+      correct: true,
+      error_magnitude: 0,
+      parameters: { a: 2, b: 2 },
+      audio_duration_ms: 900,
+      onset_latency_ms: 0,
+      resolution_latency_ms: 1250,
+    },
+    created_at: "2026-06-19T10:00:00.000Z",
+    last_error: "",
+  });
+
+  assert.equal((await store.stats("u1")).outboxPending, 1);
+  await store.markOutboxSynced([queued.clientId]);
+  assert.deepEqual(plain(await store.pendingOutbox("u1")), []);
+});
+
+test("offline attempts and feedback flush through one typed sync outbox", async () => {
+  const { createFeynmanOfflineController, createFeynmanOfflineStore } = loadOfflineModule();
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), now: () => "2026-06-19T10:00:00.000Z" });
+  const requests = [];
+  const controller = createFeynmanOfflineController({
+    store,
+    fetch: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        json: async () => ({
+          synced: 2,
+          records: [
+            {
+              local_id: requests.at(-1).body.records[0].local_id,
+              kind: "attempt",
+              ok: true,
+              client_id: "attempt-local-1",
+              server_session_id: "sess-1",
+              server_attempt_id: 44,
+            },
+            { local_id: requests.at(-1).body.records[1].local_id, kind: "review_feedback", ok: true },
+          ],
+        }),
+      };
+    },
+  });
+
+  await controller.init();
+  const attemptQueued = await controller.queueAttempt("u1", {
+    client_id: "attempt-local-1",
+    local_session_id: "offline-session-1",
     skill_id: "add",
     prompt_text: "What is 2 plus 2?",
     expected_answer: 4,
@@ -144,14 +205,94 @@ test("offline attempts are queued as bulk-sync payloads and removed after sync",
     correct: true,
     error_magnitude: 0,
     parameters: { a: 2, b: 2 },
-    audio_duration_ms: 900,
-    onset_latency_ms: 0,
     resolution_latency_ms: 1250,
   });
+  await controller.queueFeedback("u1", {
+    local_session_id: "offline-session-1",
+    attempt_client_id: attemptQueued.clientId,
+    thumb: 1,
+  });
 
-  assert.deepEqual(plain(await store.stats("u1")), { seedRemaining: 2, outboxPending: 1 });
-  await store.markOutboxSynced([queuedId]);
-  assert.deepEqual(plain(await store.pendingOutbox("u1")), []);
+  assert.equal((await controller.stats("u1")).outboxPending, 2);
+  const result = await controller.flushOutbox("u1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.synced, 2);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/sync/bulk");
+  assert.deepEqual(
+    requests[0].body.records.map((record) => record.kind),
+    ["attempt", "review_feedback"],
+  );
+  assert.equal(requests[0].body.records[0].payload.client_id, "attempt-local-1");
+  assert.equal(requests[0].body.records[1].payload.attempt_client_id, "attempt-local-1");
+
+  const stats = await controller.stats("u1");
+  assert.equal(stats.outboxPending, 0);
+  assert.equal(stats.lastSync.synced, 2);
+  assert.equal(stats.lastSync.counts.attempt, 1);
+  assert.equal(stats.lastSync.counts.review_feedback, 1);
+});
+
+test("feedback queued after attempt sync is enriched from the stored attempt mapping", async () => {
+  const { createFeynmanOfflineController, createFeynmanOfflineStore } = loadOfflineModule();
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), now: () => "2026-06-19T10:00:00.000Z" });
+  const requests = [];
+  const controller = createFeynmanOfflineController({
+    store,
+    fetch: async (url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      const isAttemptFlush = body.records.some((record) => record.kind === "attempt");
+      return {
+        ok: true,
+        json: async () => isAttemptFlush
+          ? {
+              synced: 1,
+              records: [{
+                local_id: body.records[0].local_id,
+                kind: "attempt",
+                ok: true,
+                client_id: "attempt-local-2",
+                server_session_id: "sess-2",
+                server_attempt_id: 55,
+              }],
+            }
+          : {
+              synced: 1,
+              records: [{ local_id: body.records[0].local_id, kind: "review_feedback", ok: true }],
+            },
+      };
+    },
+  });
+
+  await controller.init();
+  const queued = await controller.queueAttempt("u1", {
+    client_id: "attempt-local-2",
+    local_session_id: "offline-session-2",
+    skill_id: "add",
+    prompt_text: "What is 3 plus 3?",
+    expected_answer: 6,
+    parsed_answer: 6,
+    raw_transcript: "6",
+    skipped: false,
+    correct: true,
+    error_magnitude: 0,
+    parameters: { a: 3, b: 3 },
+  });
+  await controller.flushOutbox("u1");
+
+  await controller.queueFeedback("u1", {
+    local_session_id: "offline-session-2",
+    attempt_client_id: queued.clientId,
+    reason: "good mixed review item",
+  });
+  await controller.flushOutbox("u1");
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].records[0].kind, "review_feedback");
+  assert.equal(requests[1].records[0].payload.session_id, "sess-2");
+  assert.equal(requests[1].records[0].payload.attempt_id, 55);
 });
 
 test("typed offline answers build the same attempt shape the server bulk endpoint accepts", () => {

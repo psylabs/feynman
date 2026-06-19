@@ -65,6 +65,60 @@
     $("settings-status").textContent = window.feynmanSettings?.isBundled
       ? ""
       : "You're in a browser — this only affects the installed app.";
+    updateNotificationsStatus();
+  }
+
+  function updateNotificationsStatus(message) {
+    const el = $("notifications-status");
+    const enable = $("btn-notifications-enable");
+    const disable = $("btn-notifications-disable");
+    const reminders = window.feynmanNotifications;
+    if (!el) return;
+    if (!reminders) {
+      el.textContent = "Notifications unavailable.";
+      if (enable) enable.disabled = true;
+      if (disable) disable.disabled = true;
+      return;
+    }
+
+    const supported = reminders.isSupported();
+    if (enable) enable.disabled = !supported;
+    if (disable) disable.disabled = !supported || !reminders.isEnabled();
+    if (message) {
+      el.textContent = message;
+    } else if (!supported) {
+      el.textContent = window.feynmanSettings?.isBundled
+        ? "Notifications unavailable on this build."
+        : "Reminders are available in the installed app.";
+    } else if (reminders.isEnabled()) {
+      el.textContent = `Reminders on: ${reminders.summary()}`;
+    } else {
+      el.textContent = "Reminders off.";
+    }
+  }
+
+  async function enableNotificationReminders() {
+    const reminders = window.feynmanNotifications;
+    if (!reminders) return;
+    updateNotificationsStatus("Enabling reminders...");
+    try {
+      const result = await reminders.enable();
+      updateNotificationsStatus(result.enabled ? `Reminders on: ${result.summary}` : "Notifications unavailable.");
+    } catch (e) {
+      updateNotificationsStatus(`Notifications failed: ${e.message || e}`);
+    }
+  }
+
+  async function disableNotificationReminders() {
+    const reminders = window.feynmanNotifications;
+    if (!reminders) return;
+    updateNotificationsStatus("Turning off reminders...");
+    try {
+      await reminders.disable();
+      updateNotificationsStatus("Reminders off.");
+    } catch (e) {
+      updateNotificationsStatus(`Notifications failed: ${e.message || e}`);
+    }
   }
 
   function resetOfflineSession() {
@@ -83,9 +137,11 @@
 
   async function updateOfflineStatus(userId) {
     const el = $("offline-status");
+    const syncEl = $("sync-status");
     if (!el) return;
     if (!userId || !offlineAvailable()) {
       el.classList.add("hidden");
+      if (syncEl) syncEl.classList.add("hidden");
       return;
     }
     try {
@@ -94,8 +150,30 @@
       el.textContent = `${s.seedRemaining} offline prompts · ${s.outboxPending} pending`;
       el.classList.toggle("pending", s.outboxPending > 0);
       el.classList.remove("hidden");
+      if (syncEl) {
+        const last = s.lastSync || {};
+        syncEl.classList.remove("synced", "error");
+        if (last.last_success_at && last.last_summary_text) {
+          const when = new Date(last.last_success_at).toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          });
+          syncEl.textContent = `Last sync: ${last.last_summary_text} · ${when}`;
+          syncEl.classList.add("synced");
+          syncEl.classList.remove("hidden");
+        } else if (last.last_error_at && last.last_error) {
+          syncEl.textContent = `Sync waiting: ${last.last_error}`;
+          syncEl.classList.add("error");
+          syncEl.classList.remove("hidden");
+        } else {
+          syncEl.classList.add("hidden");
+        }
+      }
     } catch {
       el.classList.add("hidden");
+      if (syncEl) syncEl.classList.add("hidden");
     }
   }
 
@@ -637,7 +715,10 @@
     });
 
     try {
-      await window.feynmanOffline.queueAttempt(offlineUserId, built.attempt);
+      built.attempt.local_session_id = sessionId;
+      built.attempt.position_in_session = offlinePosition;
+      const queued = await window.feynmanOffline.queueAttempt(offlineUserId, built.attempt);
+      built.attempt.client_id = queued.clientId;
       await window.feynmanOffline.markSeedUsed(offlineQuestion.local_id);
     } catch {
       $("status").textContent = "Could not save offline answer.";
@@ -654,6 +735,9 @@
     currentAttemptId = null;
     offlineReviewAttempts.push({
       id: null,
+      client_id: built.attempt.client_id,
+      local_session_id: sessionId,
+      user_id: offlineUserId,
       position_in_session: offlinePosition,
       skill_id: offlineQuestion.skill_id,
       prompt_text: offlineQuestion.prompt_text,
@@ -701,7 +785,7 @@
     if (offlineSession) {
       const userId = offlineUserId;
       const r = {
-        session_id: null,
+        session_id: sessionId,
         mode: "drill",
         attempts: offlineReviewAttempts,
       };
@@ -910,11 +994,15 @@
   }
 
   function renderFeedbackList(sessionId, attempts) {
-    if (!sessionId || !attempts || !attempts.length) return "";
+    if (!attempts || !attempts.length) return "";
     const rows = attempts.map((x) => {
       const cls = x.skipped ? "skipped" : x.correct ? "correct" : "wrong";
       const mark = x.skipped ? "—" : x.correct ? "✓" : "✗";
-      return `<div class="fb-row" data-session-id="${sessionId}" data-attempt-id="${x.id}">
+      const sid = sessionId || x.local_session_id || "";
+      const attemptId = x.id == null ? "" : String(x.id);
+      const attemptClientId = x.client_id || "";
+      const userId = x.user_id || "";
+      return `<div class="fb-row" data-session-id="${escapeHtml(sid)}" data-attempt-id="${escapeHtml(attemptId)}" data-attempt-client-id="${escapeHtml(attemptClientId)}" data-user-id="${escapeHtml(userId)}">
         <span class="fb-mark ${cls}">${mark}</span>
         <span class="fb-prompt">${escapeHtml(x.prompt_text)}</span>
         <button class="fb-thumb" data-thumb="1" aria-label="Thumbs up">👍</button>
@@ -928,6 +1016,33 @@
       <div id="fb-list">${rows}</div>`;
   }
 
+  async function queueFeedbackForSync(row, body, isTextSave) {
+    const status = row.querySelector(".fb-status");
+    const input = row.querySelector(".fb-reason");
+    const saveBtn = row.querySelector(".fb-save");
+    const user = window.feynmanUser?.getCurrent?.();
+    const userId = row.dataset.userId || user?.id || offlineUserId;
+    if (!userId || !offlineAvailable() || !window.feynmanOffline?.queueFeedback) {
+      throw new Error("offline queue unavailable");
+    }
+    await window.feynmanOffline.queueFeedback(userId, {
+      session_id: String(body.session_id || "").startsWith("offline:") ? null : body.session_id,
+      local_session_id: String(body.session_id || "").startsWith("offline:") ? body.session_id : null,
+      attempt_id: body.attempt_id || null,
+      attempt_client_id: body.attempt_client_id || null,
+      thumb: body.thumb == null ? null : body.thumb,
+      reason: body.reason || null,
+    });
+    if (status) status.textContent = "queued · syncs online";
+    if (isTextSave) {
+      row.classList.add("fb-saved");
+      if (input) input.disabled = true;
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "queued"; }
+    }
+    updateOfflineStatus(userId);
+    backgroundOfflineSync(userId);
+  }
+
   async function postFeedback(row, body) {
     const status = row.querySelector(".fb-status");
     const input = row.querySelector(".fb-reason");
@@ -938,23 +1053,44 @@
       if (input) input.disabled = true;
       if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "saving…"; }
     }
+    const offlineFeedback = String(body.session_id || "").startsWith("offline:");
     try {
+      if (offlineFeedback) {
+        await queueFeedbackForSync(row, body, isTextSave);
+        return;
+      }
       const res = await fetch("/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(String(res.status));
+      if (!res.ok) {
+        const err = new Error(String(res.status));
+        err.status = res.status;
+        throw err;
+      }
       if (status) status.textContent = "saved ✓";
       if (isTextSave) {
         row.classList.add("fb-saved");
         if (saveBtn) saveBtn.textContent = "saved";
       }
-    } catch {
-      if (status) status.textContent = "couldn't save — retry";
-      if (isTextSave) {
-        if (input) input.disabled = false;
-        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "save"; }
+    } catch (e) {
+      if (!offlineFeedback && e.status && e.status < 500) {
+        if (status) status.textContent = "couldn't save — retry";
+        if (isTextSave) {
+          if (input) input.disabled = false;
+          if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "save"; }
+        }
+        return;
+      }
+      try {
+        await queueFeedbackForSync(row, body, isTextSave);
+      } catch {
+        if (status) status.textContent = "couldn't save — retry";
+        if (isTextSave) {
+          if (input) input.disabled = false;
+          if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "save"; }
+        }
       }
     }
   }
@@ -973,6 +1109,7 @@
       postFeedback(row, {
         session_id: row.dataset.sessionId,
         attempt_id: aid,
+        attempt_client_id: row.dataset.attemptClientId || null,
         thumb: value,
       });
       return;
@@ -988,6 +1125,7 @@
       postFeedback(row, {
         session_id: row.dataset.sessionId,
         attempt_id: aid,
+        attempt_client_id: row.dataset.attemptClientId || null,
         reason,
       });
     }
@@ -1003,7 +1141,12 @@
     if (!reason) return;
     e.preventDefault();
     const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
-    postFeedback(row, { session_id: row.dataset.sessionId, attempt_id: aid, reason });
+    postFeedback(row, {
+      session_id: row.dataset.sessionId,
+      attempt_id: aid,
+      attempt_client_id: row.dataset.attemptClientId || null,
+      reason,
+    });
   });
 
   function renderSessionAnalysis(a) {
@@ -1370,6 +1513,8 @@
       $("settings-status").textContent = `Failed: ${e.message || e}`;
     }
   });
+  $("btn-notifications-enable")?.addEventListener("click", enableNotificationReminders);
+  $("btn-notifications-disable")?.addEventListener("click", disableNotificationReminders);
 
   // Debug pane toggle (visible everywhere; collapses the right column on
   // desktop, opens an overlay on mobile).
@@ -1387,6 +1532,11 @@
   window.feynmanOffline?.onOnline?.(() => {
     const user = window.feynmanUser?.getCurrent?.();
     if (user) backgroundOfflineSync(user.id);
+  });
+  window.feynmanNotifications?.onAction?.(() => {
+    const user = window.feynmanUser?.getCurrent?.();
+    if (user) backgroundOfflineSync(user.id);
+    showScreen("screen-start");
   });
 
   refreshStartScreen();

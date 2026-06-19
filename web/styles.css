@@ -122,6 +122,7 @@ button {
 button:hover:not(:disabled) { background: #2a2c30; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.settings-group { margin-bottom: 24px; }
 .settings-group label { display: block; font-size: 13px; color: #d8d9dc; margin-bottom: 4px; }
 .settings-group input[type="url"],
 .settings-group input[type="text"] {
@@ -137,7 +138,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   color: #d8d9dc;
 }
 .settings-group input:focus { outline: none; border-color: #1d4fd8; }
-#settings-status { margin-top: 12px; }
+#settings-status,
+#notifications-status { margin-top: 12px; }
 
 button.primary {
   background: #2563eb;
@@ -384,6 +386,14 @@ table.metrics { margin-top: 4px; }
   font-variant-numeric: tabular-nums;
 }
 .offline-status.pending { color: #c9b86d; }
+.sync-status {
+  font-size: 11px;
+  color: #777;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.sync-status.synced { color: #7fa98a; }
+.sync-status.error { color: #c98282; }
 
 /* ---- in-session plan ---- */
 .session-plan {

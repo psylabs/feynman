@@ -45,6 +45,35 @@
     );
     CREATE INDEX IF NOT EXISTS idx_attempts_outbox_user
       ON attempts_outbox(user_id, id);
+
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      local_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_outbox_user
+      ON sync_outbox(user_id, id);
+
+    CREATE TABLE IF NOT EXISTS sync_mappings (
+      user_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      server_session_id TEXT NOT NULL,
+      server_attempt_id INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, client_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_status (
+      user_id TEXT PRIMARY KEY,
+      last_success_at TEXT,
+      last_summary_json TEXT,
+      last_error_at TEXT,
+      last_error TEXT
+    );
   `;
 
   function isoNow() {
@@ -142,6 +171,52 @@
     };
   }
 
+  function randomId(prefix) {
+    return prefix + ":" + Date.now().toString(36) + ":" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function normalizeSyncRow(row) {
+    return {
+      outbox_id: row.id,
+      local_id: row.local_id,
+      user_id: row.user_id,
+      kind: row.kind,
+      payload: safeJsonParse(row.payload_json, {}),
+      created_at: row.created_at,
+      last_error: row.last_error || "",
+    };
+  }
+
+  function normalizeMapping(row) {
+    if (!row) return null;
+    return {
+      user_id: row.user_id,
+      client_id: row.client_id,
+      server_session_id: row.server_session_id,
+      server_attempt_id: row.server_attempt_id == null ? null : Number(row.server_attempt_id),
+    };
+  }
+
+  function summarizeRecords(results) {
+    var counts = {};
+    var synced = 0;
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      if (!r || !r.ok) continue;
+      synced += 1;
+      counts[r.kind || "unknown"] = (counts[r.kind || "unknown"] || 0) + 1;
+    }
+    return { synced: synced, counts: counts };
+  }
+
+  function syncSummaryText(summary) {
+    if (!summary || !summary.counts) return "";
+    var labels = [];
+    if (summary.counts.attempt) labels.push(summary.counts.attempt + " attempt" + (summary.counts.attempt === 1 ? "" : "s"));
+    if (summary.counts.review_feedback) labels.push(summary.counts.review_feedback + " feedback");
+    return labels.join(", ");
+  }
+
   function createFeynmanOfflineStore(options) {
     options = options || {};
     var driver = options.driver || createCapacitorSQLiteDriver(options.database || DB_NAME, options.plugin);
@@ -156,7 +231,47 @@
       try {
         await driver.run("ALTER TABLE seed_pack ADD COLUMN audio_data_url TEXT", []);
       } catch {}
+      await migrateLegacyAttempts();
       initialized = true;
+    }
+
+    async function insertSyncRecord(userId, kind, payload, localId) {
+      if (!userId) throw new Error("sync user_id required");
+      if (!kind) throw new Error("sync kind required");
+      var recordLocalId = localId || payload?.client_id || payload?.local_id || randomId(kind);
+      var res = await driver.run(
+        `INSERT INTO sync_outbox (local_id, user_id, kind, payload_json, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [recordLocalId, userId, kind, JSON.stringify(payload || {}), now()]
+      );
+      return { outboxId: res?.changes?.lastId || 0, localId: recordLocalId, kind: kind };
+    }
+
+    async function queueSyncRecord(userId, kind, payload, localId) {
+      await ensureAvailable();
+      return insertSyncRecord(userId, kind, payload, localId);
+    }
+
+    async function migrateLegacyAttempts() {
+      try {
+        var legacy = await driver.query(
+          `SELECT id, user_id, skill_id, prompt_text, expected_answer, parsed_answer,
+                  raw_transcript, skipped, correct, error_magnitude, parameters_json,
+                  audio_duration_ms, onset_latency_ms, resolution_latency_ms
+             FROM attempts_outbox
+            ORDER BY id`,
+          []
+        );
+        var rows = legacy.values || [];
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var payload = normalizeOutboxRow(row);
+          delete payload.outbox_id;
+          payload.client_id = payload.client_id || "legacy-attempt:" + row.id;
+          await insertSyncRecord(row.user_id, "attempt", payload, payload.client_id);
+          await driver.run("DELETE FROM attempts_outbox WHERE id = ?", [row.id]);
+        }
+      } catch {}
     }
 
     return {
@@ -222,51 +337,123 @@
 
       async queueAttempt(userId, attempt) {
         await ensureAvailable();
-        var res = await driver.run(
-          `INSERT INTO attempts_outbox (
-            user_id, skill_id, prompt_text, expected_answer, parsed_answer,
-            raw_transcript, skipped, correct, error_magnitude, parameters_json,
-            audio_duration_ms, onset_latency_ms, resolution_latency_ms, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            userId,
-            attempt.skill_id,
-            attempt.prompt_text,
-            Number(attempt.expected_answer),
-            attempt.parsed_answer == null ? null : Number(attempt.parsed_answer),
-            attempt.raw_transcript || "",
-            attempt.skipped ? 1 : 0,
-            attempt.correct ? 1 : 0,
-            attempt.error_magnitude == null ? null : Number(attempt.error_magnitude),
-            JSON.stringify(attempt.parameters || {}),
-            attempt.audio_duration_ms == null ? null : Number(attempt.audio_duration_ms),
-            attempt.onset_latency_ms == null ? null : Number(attempt.onset_latency_ms),
-            attempt.resolution_latency_ms == null ? null : Number(attempt.resolution_latency_ms),
-            now(),
-          ]
-        );
-        return res?.changes?.lastId || 0;
+        var clientId = attempt.client_id || randomId("attempt");
+        var payload = Object.assign({}, attempt, {
+          client_id: clientId,
+          expected_answer: Number(attempt.expected_answer),
+          parsed_answer: attempt.parsed_answer == null ? null : Number(attempt.parsed_answer),
+          raw_transcript: attempt.raw_transcript || "",
+          skipped: !!attempt.skipped,
+          correct: !!attempt.correct,
+          error_magnitude: attempt.error_magnitude == null ? null : Number(attempt.error_magnitude),
+          parameters: attempt.parameters || {},
+          audio_duration_ms: attempt.audio_duration_ms == null ? null : Number(attempt.audio_duration_ms),
+          onset_latency_ms: attempt.onset_latency_ms == null ? null : Number(attempt.onset_latency_ms),
+          resolution_latency_ms: attempt.resolution_latency_ms == null ? null : Number(attempt.resolution_latency_ms),
+        });
+        var queued = await queueSyncRecord(userId, "attempt", payload, clientId);
+        return { outboxId: queued.outboxId, clientId: clientId };
+      },
+
+      async queueFeedback(userId, feedback) {
+        var payload = Object.assign({}, feedback || {});
+        if (payload.reason != null) payload.reason = String(payload.reason || "").trim();
+        payload.thumb = payload.thumb == null ? null : Number(payload.thumb);
+        return queueSyncRecord(userId, "review_feedback", payload);
       },
 
       async pendingOutbox(userId) {
         await ensureAvailable();
         var res = await driver.query(
-          `SELECT id, skill_id, prompt_text, expected_answer, parsed_answer,
-                  raw_transcript, skipped, correct, error_magnitude, parameters_json,
-                  audio_duration_ms, onset_latency_ms, resolution_latency_ms
-             FROM attempts_outbox
+          `SELECT id, local_id, user_id, kind, payload_json, created_at, last_error
+             FROM sync_outbox
             WHERE user_id = ?
             ORDER BY id`,
           [userId]
         );
-        return (res.values || []).map(normalizeOutboxRow);
+        return (res.values || []).map(normalizeSyncRow);
       },
 
-      async markOutboxSynced(ids) {
+      async markOutboxSynced(localIds) {
         await ensureAvailable();
-        for (var i = 0; i < ids.length; i++) {
-          await driver.run("DELETE FROM attempts_outbox WHERE id = ?", [ids[i]]);
+        for (var i = 0; i < localIds.length; i++) {
+          await driver.run("DELETE FROM sync_outbox WHERE local_id = ?", [localIds[i]]);
         }
+      },
+
+      async recordAttemptMappings(userId, results) {
+        await ensureAvailable();
+        for (var i = 0; i < results.length; i++) {
+          var r = results[i];
+          if (!r || !r.ok || r.kind !== "attempt" || !r.client_id || !r.server_session_id) continue;
+          await driver.run(
+            `INSERT OR REPLACE INTO sync_mappings (
+              user_id, client_id, server_session_id, server_attempt_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?)`,
+            [
+              userId,
+              r.client_id,
+              r.server_session_id,
+              r.server_attempt_id == null ? null : Number(r.server_attempt_id),
+              now(),
+            ]
+          );
+        }
+      },
+
+      async attemptMapping(userId, clientId) {
+        await ensureAvailable();
+        if (!clientId) return null;
+        var res = await driver.query(
+          `SELECT user_id, client_id, server_session_id, server_attempt_id
+             FROM sync_mappings
+            WHERE user_id = ? AND client_id = ?`,
+          [userId, clientId]
+        );
+        return normalizeMapping((res.values || [])[0]);
+      },
+
+      async recordSyncSuccess(userId, summary) {
+        await ensureAvailable();
+        await driver.run(
+          `INSERT OR REPLACE INTO sync_status (
+            user_id, last_success_at, last_summary_json, last_error_at, last_error
+          ) VALUES (?, ?, ?, NULL, NULL)`,
+          [userId, now(), JSON.stringify(summary || {})]
+        );
+      },
+
+      async recordSyncError(userId, error) {
+        await ensureAvailable();
+        await driver.run(
+          `INSERT INTO sync_status (user_id, last_error_at, last_error)
+           VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             last_error_at = excluded.last_error_at,
+             last_error = excluded.last_error`,
+          [userId, now(), String(error && (error.message || error) || "sync failed")]
+        );
+      },
+
+      async syncStatus(userId) {
+        await ensureAvailable();
+        var res = await driver.query(
+          `SELECT last_success_at, last_summary_json, last_error_at, last_error
+             FROM sync_status
+            WHERE user_id = ?`,
+          [userId]
+        );
+        var row = (res.values || [])[0] || {};
+        var summary = safeJsonParse(row.last_summary_json, null);
+        return {
+          last_success_at: row.last_success_at || "",
+          last_summary: summary,
+          synced: summary?.synced || 0,
+          counts: summary?.counts || {},
+          last_summary_text: syncSummaryText(summary),
+          last_error_at: row.last_error_at || "",
+          last_error: row.last_error || "",
+        };
       },
 
       async stats(userId) {
@@ -277,12 +464,13 @@
           [userId]
         );
         var outbox = await driver.query(
-          "SELECT COUNT(*) AS count FROM attempts_outbox WHERE user_id = ?",
+          "SELECT COUNT(*) AS count FROM sync_outbox WHERE user_id = ?",
           [userId]
         );
         return {
           seedRemaining: Number((seed.values || [])[0]?.count || 0),
           outboxPending: Number((outbox.values || [])[0]?.count || 0),
+          lastSync: await this.syncStatus(userId),
         };
       },
     };
@@ -416,26 +604,53 @@
       return { ok: true, count: saved };
     }
 
+    async function recordsForSync(userId, pending) {
+      var records = [];
+      for (var i = 0; i < pending.length; i++) {
+        var row = pending[i];
+        var payload = Object.assign({}, row.payload || {});
+        if (row.kind === "review_feedback" && payload.attempt_client_id && !payload.attempt_id) {
+          var mapping = await store.attemptMapping(userId, payload.attempt_client_id);
+          if (mapping) {
+            payload.session_id = payload.session_id || mapping.server_session_id;
+            payload.attempt_id = payload.attempt_id || mapping.server_attempt_id;
+          }
+        }
+        records.push({
+          local_id: row.local_id,
+          kind: row.kind,
+          payload: payload,
+        });
+      }
+      return records;
+    }
+
     async function flushOutbox(userId) {
       if (!userId || !(await onlineStatus())) return { ok: false, reason: "offline" };
       await init();
       if (!fetchFn) throw new Error("fetch unavailable");
       var pending = await store.pendingOutbox(userId);
       if (!pending.length) return { ok: true, synced: 0 };
-      var attempts = pending.map(function (row) {
-        var copy = Object.assign({}, row);
-        delete copy.outbox_id;
-        return copy;
-      });
-      var res = await fetchFn("/session/attempts/bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, attempts: attempts }),
-      });
-      if (!res.ok) throw new Error("bulk sync HTTP " + res.status);
-      var body = await res.json();
-      await store.markOutboxSynced(pending.map(function (row) { return row.outbox_id; }));
-      return { ok: true, synced: body.synced || 0, response: body };
+      var records = await recordsForSync(userId, pending);
+      try {
+        var res = await fetchFn("/sync/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId, records: records }),
+        });
+        if (!res.ok) throw new Error("bulk sync HTTP " + res.status);
+        var body = await res.json();
+        var results = body.records || [];
+        var syncedIds = results.filter(function (r) { return r && r.ok; }).map(function (r) { return r.local_id; });
+        await store.recordAttemptMappings(userId, results);
+        if (syncedIds.length) await store.markOutboxSynced(syncedIds);
+        var summary = summarizeRecords(results);
+        await store.recordSyncSuccess(userId, summary);
+        return { ok: true, synced: body.synced || summary.synced || 0, response: body };
+      } catch (e) {
+        await store.recordSyncError(userId, e);
+        throw e;
+      }
     }
 
     return {
@@ -449,6 +664,7 @@
       nextSeed: function (userId) { return store.nextSeed(userId); },
       markSeedUsed: function (localId) { return store.markSeedUsed(localId); },
       queueAttempt: function (userId, attempt) { return store.queueAttempt(userId, attempt); },
+      queueFeedback: function (userId, feedback) { return store.queueFeedback(userId, feedback); },
       isAvailable: function () { return store.isAvailable(); },
     };
   }
