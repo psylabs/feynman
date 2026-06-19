@@ -109,8 +109,13 @@ Hard-won notes for future agents working on the Capacitor mobile migration.
   `https?://localhost` and `capacitor://localhost`.
 - The backend base is **hardcoded** in `config.js` (`FEYNMAN_API_BASE`). Moving
   it to an in-app settings screen is Phase 1.
-- Run the backend with TLS:
-  `uvicorn server.main:app --host 0.0.0.0 --port 8765 --ssl-certfile certs/feynman.crt --ssl-keyfile certs/feynman.key`
+- **The backend is launchd-managed** (LaunchAgent `com.pip.feynman`, defined in
+  `deploy/launchd/`, runs `scripts/run-server.sh` with TLS, KeepAlive on). Don't
+  `pkill` it expecting it to stay down — it respawns. Manage it with
+  `launchctl kickstart -k gui/$(id -u)/com.pip.feynman` (restart) or
+  `launchctl bootout gui/$(id -u)/com.pip.feynman` (stop). Logs:
+  `~/Library/Logs/feynman-server.log`. A weekly `com.pip.feynman.certrenew`
+  agent renews the cert and restarts only when it changes.
 - **Certs live in gitignored `certs/` and expire ~90 days** (Let's Encrypt;
   current expiry 2026-09-16). Re-mint with `tailscale cert` before then.
 - After changing `web/` or `capacitor.config.json`, run `npx cap sync android`.
