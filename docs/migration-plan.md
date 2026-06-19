@@ -129,10 +129,22 @@ Effort is calendar-loose: assume part-time on a personal project. "S/M/L" ≈ 1-
 - Wrap the Mac mini server in a **launchd plist** so it auto-starts at login and respawns on crash. Move the FD-limit `_raise_fd_limit` to a launchd `SoftResourceLimits` entry as belt-and-suspenders. **This independently solves the "restart server" pain.**
 - Plugins installed: `@capacitor/preferences`, `@capacitor/local-notifications`, `@capacitor-community/sqlite`, `@capacitor-community/voice-recorder`.
 
-### Phase 2 — Native audio capture (S)
-- Replace `MediaRecorder` block in `web/app.js:258-315` with `VoiceRecorder.startRecording()` / `stopRecording()`. Keep same multipart upload path.
-- iOS `Info.plist`: `NSMicrophoneUsageDescription`. Android `Manifest`: `RECORD_AUDIO`.
-- Update `server/stt.py` to accept m4a in addition to webm if Whisper needs a hint.
+### Phase 2 — Native audio capture (S) — **DEFERRED to the iOS phase (2026-06-19)**
+**Decision:** not needed for Android. Phase 0 bundling already gives a secure
+context (`https://localhost`) where the existing `MediaRecorder` path works and
+produces `webm`, which OpenAI's transcription API accepts. The native recorder's
+real value is iOS WKWebView reliability, so it moves to whenever iOS is tackled.
+
+**Gotcha for that work:** `capacitor-voice-recorder` records `AAC_ADTS` (`.aac`)
+on Android and `audio/aac` on iOS, and **OpenAI transcription rejects raw `.aac`**
+(it accepts flac/m4a/mp3/mp4/mpeg/mpga/oga/ogg/wav/webm). So that phase must
+transcode `.aac`→`.m4a` server-side (e.g. `ffmpeg -i in.aac -c copy out.m4a`,
+lossless) — and ffmpeg is **not** currently installed on the mini.
+
+Original plan (for reference):
+- Replace `MediaRecorder` block in `web/app.js` with `VoiceRecorder.startRecording()` / `stopRecording()`. Keep same multipart upload path.
+- iOS `Info.plist`: `NSMicrophoneUsageDescription`. Android `Manifest`: `RECORD_AUDIO` (already present).
+- `server/main.py` already derives the file suffix from the upload filename, so the server needs the transcode step, not a format hint.
 
 ### Phase 3 — Offline seeding (L) ← the main feature
 - Server: new endpoint `GET /seed-pack/{user_id}` (see "Offline seeding" above). Reuse `server/scheduler.py`, generators, and `server/tts.py`.
