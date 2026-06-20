@@ -620,7 +620,17 @@
       } catch {}
       const mime = mediaRecorder.mimeType || "audio/webm";
       const blob = new Blob(audioChunks, { type: mime });
-      await submitAnswer(blob, resolutionTs);
+      // Diagnostics: device model + WebView version (UA), actual codec the
+      // device produced, payload size, recorded duration, and chunk count.
+      // Logged server-side so STT failures can be correlated with hardware.
+      const clientMeta = {
+        ua: navigator.userAgent,
+        mime,
+        bytes: blob.size,
+        clip_ms: Math.round((resolutionTs - onsetTs) * 1000),
+        chunks: audioChunks.length,
+      };
+      await submitAnswer(blob, resolutionTs, clientMeta);
     };
     mediaRecorder.start();
   }
@@ -635,7 +645,7 @@
     if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
   }
 
-  async function submitAnswer(blob, resolutionTs) {
+  async function submitAnswer(blob, resolutionTs, clientMeta) {
     const fd = new FormData();
     fd.append("session_id", sessionId);
     fd.append("qid", currentQid);
@@ -643,6 +653,7 @@
     fd.append("onset_ts", String(onsetTs));
     fd.append("resolution_ts", String(resolutionTs));
     fd.append("audio", blob, "answer.webm");
+    if (clientMeta) fd.append("client_meta", JSON.stringify(clientMeta));
 
     let r;
     try {

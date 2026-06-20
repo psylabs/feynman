@@ -305,17 +305,26 @@ async def session_submit(
     onset_ts: float = Form(...),
     resolution_ts: float = Form(...),
     audio: UploadFile = File(...),
+    client_meta: str = Form(""),
 ):
     audio_bytes = await audio.read()
     suffix = Path(audio.filename or "answer.webm").suffix or ".webm"
     audio_path = ANSWER_DIR / f"answer_{uuid.uuid4().hex}{suffix}"
     audio_path.write_bytes(audio_bytes)
+    # Client diagnostics (device UA, codec, size, clip duration); best-effort.
+    meta: dict = {}
+    if client_meta:
+        try:
+            meta = json.loads(client_meta)
+        except (json.JSONDecodeError, ValueError):
+            meta = {}
     bus.emit(
         "answer.received",
         session_id=session_id,
         qid=qid,
         bytes=len(audio_bytes),
         path=str(audio_path),
+        client_meta=meta,
     )
     try:
         result = await asyncio.to_thread(
@@ -326,6 +335,7 @@ async def session_submit(
             prompt_end_ts,
             onset_ts,
             resolution_ts,
+            meta,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
