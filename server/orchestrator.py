@@ -296,6 +296,7 @@ class Orchestrator:
         prompt_end_ts: float,
         onset_ts: float,
         resolution_ts: float,
+        client_meta: dict | None = None,
     ) -> dict:
         q = self._active.get(sid)
         if not q or q["qid"] != qid:
@@ -319,6 +320,7 @@ class Orchestrator:
                 session_id=sid,
                 qid=qid,
                 stt_error=trans.get("error"),
+                client_meta=client_meta or {},
             )
             return {
                 "audio_failed": True,
@@ -342,6 +344,7 @@ class Orchestrator:
                 session_id=sid,
                 qid=qid,
                 transcript=text,
+                client_meta=client_meta or {},
             )
             return {
                 "audio_failed": True,
