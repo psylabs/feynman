@@ -116,6 +116,18 @@ Hard-won notes for future agents working on the Capacitor mobile migration.
   `launchctl bootout gui/$(id -u)/com.pip.feynman` (stop). Logs:
   `~/Library/Logs/feynman-server.log`. A weekly `com.pip.feynman.certrenew`
   agent renews the cert and restarts only when it changes.
+- **ALWAYS restart the server after touching `server/*.py` (or `git reset`/
+  `checkout`/`pull` that changes it) — the long-running process holds the OLD
+  code in memory, so disk changes do NOT take effect until you kill and relaunch
+  it.** uvicorn runs without `--reload`. This has bitten us: a reverted commit
+  kept being served (e.g. phantom `recent_charge_total` money problems) because
+  the old process was still alive, and the stale server also baked bad problems
+  into the device's downloaded seed pack. After any server-code change run
+  `launchctl kickstart -k gui/$(id -u)/com.pip.feynman`, confirm a new PID
+  (`ps aux | grep uvicorn`) and a 200 from `curl -sk https://localhost:8765/`.
+  Note the seed pack is separate: the client only re-downloads it when
+  `seedRemaining < 10` (`web/app.js`), so the device replays old problems until
+  it drains the cached pack against the restarted server.
 - **Certs live in gitignored `certs/` and expire ~90 days** (Let's Encrypt;
   current expiry 2026-09-16). Re-mint with `tailscale cert` before then.
 - After changing `web/` or `capacitor.config.json`, run `npx cap sync android`.

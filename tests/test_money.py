@@ -27,6 +27,45 @@ class MoneyTests(unittest.TestCase):
         self.assertTrue(all(r["amount"] > 0 for r in rows))
         self.assertTrue(all(r["excluded"] is False for r in rows))
 
+    def test_load_recent_plaid_filters_window_and_labels_days(self):
+        import json
+        payload = {
+            "until": "2026-06-20",
+            "transactions": [
+                {"date": "2026-06-19", "merchant": "DoNotDisturb", "amount": 723.0,
+                 "category": "FOOD_AND_DRINK", "pending": False},
+                {"date": "2026-06-01", "merchant": "OldDinner", "amount": 200.0,
+                 "category": "FOOD_AND_DRINK", "pending": False},  # outside window
+                {"date": "2026-06-18", "merchant": "Refund", "amount": -50.0,
+                 "category": "FOOD_AND_DRINK", "pending": False},  # credit, skipped
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "latest.json"
+            path.write_text(json.dumps(payload))
+            rows = money.load_recent_plaid_transactions(path, window_days=7)
+
+        self.assertEqual([r["payee"] for r in rows], ["DoNotDisturb"])
+        self.assertEqual(rows[0]["when"], "yesterday")
+
+    def test_split_bill_respects_max_party_and_divides_evenly(self):
+        rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Dining", "amount": 84.0}]
+        for _ in range(50):
+            base = money.generate_problem(rows, target={"operation": "split_bill", "max_party": 5})
+            self.assertIn(base["parameters"]["people"], (3, 4, 5))
+            adv = money.generate_problem(rows, target={"operation": "split_bill", "max_party": 8})
+            self.assertIn(adv["parameters"]["people"], (3, 4, 5, 6, 7, 8))
+            self.assertEqual(
+                base["parameters"]["bill_amount"],
+                base["expected"] * base["parameters"]["people"],
+            )
+
+    def test_restaurant_tip_15_is_fifteen_percent_rounded(self):
+        rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Food & Dining", "amount": 80.0}]
+        p = money.generate_problem(rows, target={"operation": "restaurant_tip_15"})
+        self.assertEqual(p["parameters"]["tip_percent"], 15)
+        self.assertEqual(p["expected"], round(p["parameters"]["bill_amount"] * 0.15))
+
     def test_generates_real_charge_total_prompt(self):
         rows = [
             {"date": "2026-01-02", "payee": "Trader Joe's", "category": "Groceries", "amount": 18.42},

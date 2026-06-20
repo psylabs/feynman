@@ -60,7 +60,7 @@
   tolerance:
     type: money
   parameter_schema:
-    operations: [charge_total, category_difference, category_share]
+    operations: [restaurant_tip_15, split_bill, charge_total, category_difference, category_share]
   templates:
     - "Use transaction data to answer this money question."
 

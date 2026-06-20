@@ -1,17 +1,27 @@
-"""CSV-backed money arithmetic problem generation."""
+"""Money arithmetic problem generation.
+
+Category/charge-total problems are backed by the historical CSV. The two
+"sticky" finance staples (15% tip, split-the-bill) pull from *recent* Plaid
+transactions so they name a real merchant, amount, and day ("$725 at
+DoNotDisturb yesterday") — recency is what makes them memorable.
+"""
 
 from __future__ import annotations
 
 import csv
+import json
+import os
 import random
 from collections import defaultdict
-from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 
 ROOT = Path(__file__).parent.parent
 DEFAULT_CSV = ROOT / "data" / "transactions.csv"
+PLAID_ENV = "FEYNMAN_PLAID_LATEST_JSON"
+RECENT_WINDOW_DAYS = 7
 EXCLUDED_PRACTICE_PREFIXES = (
     "Home:",
     "Taxes:",
@@ -42,15 +52,85 @@ def load_transactions(path: Path = DEFAULT_CSV) -> list[dict]:
     return rows
 
 
+def load_recent_plaid_transactions(
+    path: Path | str | None = None,
+    window_days: int = RECENT_WINDOW_DAYS,
+) -> list[dict]:
+    """Load expenses from the recent window of the Plaid ``latest.json`` dump.
+
+    Each row carries a human ``when`` label ("yesterday", "on Monday") computed
+    relative to the dump's ``until`` date, so prompts can stay sticky. Returns
+    ``[]`` when the env var is unset or the file is missing/unreadable; callers
+    fall back to the historical CSV.
+    """
+    if path is None:
+        configured = os.environ.get(PLAID_ENV)
+        if not configured:
+            return []
+        path = configured
+    path = Path(path).expanduser()
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    transactions = payload.get("transactions")
+    if not isinstance(transactions, list):
+        return []
+    until = _plaid_until_date(payload, transactions)
+    if not until:
+        return []
+    cutoff = until - timedelta(days=window_days)
+
+    rows = []
+    for tx in transactions:
+        if not isinstance(tx, dict):
+            continue
+        tx_date = _iso_date(tx.get("date"))
+        if not tx_date or tx_date < cutoff or tx_date > until:
+            continue
+        try:
+            amount = _money(tx.get("amount", "0"))
+        except (InvalidOperation, ValueError):
+            continue
+        if amount <= 0:  # skip refunds/credits/income
+            continue
+        rows.append({
+            "date": tx_date.isoformat(),
+            "when": _relative_day(tx_date, until),
+            "payee": (tx.get("merchant") or tx.get("name") or "").strip(),
+            "category": (tx.get("category") or "Uncategorized").strip(),
+            "amount": float(amount),
+            "excluded": False,
+        })
+    return rows
+
+
 def generate_problem(rows: list[dict] | None = None, target: dict | None = None) -> dict:
-    rows = rows if rows is not None else load_transactions()
-    if not rows:
-        return _fallback_problem()
     operation = (target or {}).get("operation") or random.choice([
         "charge_total",
         "category_difference",
         "category_share",
     ])
+    # Sticky finance staples pull from recent Plaid data (real merchant + day);
+    # fall back to the historical CSV only when Plaid is unavailable.
+    if operation in ("restaurant_tip_15", "split_bill"):
+        finance_rows = rows if rows is not None else (
+            load_recent_plaid_transactions() or load_transactions()
+        )
+        if not finance_rows:
+            return _fallback_problem()
+        if operation == "restaurant_tip_15":
+            return _restaurant_tip_15(finance_rows)
+        return _split_bill(
+            finance_rows, max_party=(target or {}).get("max_party", SPLIT_BILL_BASE_MAX)
+        )
+
+    rows = rows if rows is not None else load_transactions()
+    if not rows:
+        return _fallback_problem()
     if operation == "charge_total":
         return _charge_total(rows)
     if operation == "category_difference":
@@ -58,6 +138,102 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
     if operation == "category_share":
         return _category_share(rows)
     return _charge_total(rows)
+
+
+# ---- finance: tip + split-the-bill ---------------------------------------
+
+TIP_PERCENT = 15
+# Split-the-bill party sizes. Base (3-5) is always available; advanced (6-8)
+# unlocks once the scheduler decides the user is fluent at the base set and
+# raises `max_party` to SPLIT_BILL_ADVANCED_MAX.
+SPLIT_BILL_BASE_DIVISORS = (3, 4, 5)
+SPLIT_BILL_ADVANCED_DIVISORS = (6, 7, 8)
+SPLIT_BILL_BASE_MAX = 5
+SPLIT_BILL_ADVANCED_MAX = 8
+SPLIT_MIN_SHARE = 3  # don't generate splits where each person owes < $3
+
+
+def _restaurant_tip_15(rows: list[dict]) -> dict:
+    """Ask for a 15% tip on a real recent restaurant bill (rounded to $1)."""
+    pool = [r for r in rows if _is_restaurant_category(r.get("category", ""))] or rows
+    row = random.choice(pool)
+    label = _clean_label(row["payee"], row["category"])
+    bill = _swag(row["amount"])
+    tip = _round_tip(bill, TIP_PERCENT)
+    return {
+        "prompt": (
+            f"{_spent_clause(label, bill, row.get('when'))} "
+            f"What is a {TIP_PERCENT} percent tip, rounded to the nearest dollar?"
+        ),
+        "expected": float(tip),
+        "parameters": {
+            "operation": "restaurant_tip_15",
+            "source": row.get("source", "plaid.latest.json"),
+            "label": label,
+            "category": row["category"],
+            "when": row.get("when"),
+            "bill_amount": bill,
+            "tip_percent": TIP_PERCENT,
+        },
+    }
+
+
+def _split_bill(rows: list[dict], max_party: int = SPLIT_BILL_BASE_MAX) -> dict:
+    """Split a real recent charge evenly among N people; ask for each share.
+
+    Party size is drawn from the divisors allowed by `max_party`. The bill is
+    the real amount rounded to the nearest clean multiple of `people`, so it
+    stays sticky (real merchant/day) but divides evenly for mental math.
+    """
+    # You split restaurant/bar checks, not a Lyft or a loan payment. Prefer
+    # dining charges and lean toward the larger ones (weighted by amount) so
+    # the division isn't trivial.
+    pool = [r for r in rows if _is_restaurant_category(r.get("category", ""))] or rows
+    row = random.choices(pool, weights=[max(1.0, r["amount"]) for r in pool], k=1)[0]
+    label = _clean_label(row["payee"], row["category"])
+    allowed = [
+        d for d in SPLIT_BILL_BASE_DIVISORS + SPLIT_BILL_ADVANCED_DIVISORS
+        if d <= max_party
+    ] or list(SPLIT_BILL_BASE_DIVISORS)
+    # Don't split a $15 lunch 8 ways: keep each share at least SPLIT_MIN_SHARE,
+    # falling back to the smallest party size for genuinely tiny bills.
+    divisors = [d for d in allowed if round(row["amount"] / d) >= SPLIT_MIN_SHARE] or [min(allowed)]
+    people = random.choice(divisors)
+    share = max(1, round(row["amount"] / people))
+    bill = share * people
+    return {
+        "prompt": (
+            f"{_spent_clause(label, bill, row.get('when'))} "
+            f"Split the check {people} ways — about how much is each share?"
+        ),
+        "expected": float(share),
+        "parameters": {
+            "operation": "split_bill",
+            "source": row.get("source", "plaid.latest.json"),
+            "label": label,
+            "category": row["category"],
+            "when": row.get("when"),
+            "bill_amount": bill,
+            "people": people,
+            "max_party": max_party,
+        },
+    }
+
+
+def _spent_clause(label: str, amount: int, when: str | None) -> str:
+    """'You spent $725 at DoNotDisturb yesterday.' (drops the day if unknown)."""
+    when_text = f" {when}" if when else ""
+    return f"You spent ${amount:,} at {label}{when_text}."
+
+
+def _is_restaurant_category(category: str) -> bool:
+    normalized = (category or "").upper().replace(" ", "_")
+    return "FOOD" in normalized or "DINING" in normalized or "RESTAURANT" in normalized
+
+
+def _round_tip(amount: int, percent: int) -> int:
+    raw = Decimal(amount) * Decimal(percent) / Decimal(100)
+    return int(raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _charge_total(rows: list[dict]) -> dict:
@@ -202,6 +378,34 @@ def _date_key(s: str) -> str:
         return datetime.strptime(s.strip(), "%b %d, %Y").date().isoformat()
     except ValueError:
         return s.strip()
+
+
+def _iso_date(s) -> date | None:
+    try:
+        return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _plaid_until_date(payload: dict, transactions: list[dict]) -> date | None:
+    until = _iso_date(payload.get("until"))
+    if until:
+        return until
+    dates = [_iso_date(tx.get("date")) for tx in transactions if isinstance(tx, dict)]
+    dates = [d for d in dates if d]
+    return max(dates) if dates else None
+
+
+def _relative_day(tx_date: date, until: date) -> str:
+    """Human day label relative to the dump's reference date."""
+    delta = (until - tx_date).days
+    if delta <= 0:
+        return "today"
+    if delta == 1:
+        return "yesterday"
+    if delta < 7:
+        return f"on {tx_date.strftime('%A')}"
+    return "this week"
 
 
 def _money(s) -> Decimal:

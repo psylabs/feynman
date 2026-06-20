@@ -184,7 +184,7 @@
       await window.feynmanOffline.init();
       await window.feynmanOffline.flushOutbox(userId);
       const s = await window.feynmanOffline.stats(userId);
-      if (s.seedRemaining < 10) await window.feynmanOffline.refreshSeedPack(userId, 50);
+      if (s.seedRemaining < 4) await window.feynmanOffline.refreshSeedPack(userId, 10);
     } catch (e) {
       // Offline or backend unreachable. The visible status is refreshed below.
     } finally {

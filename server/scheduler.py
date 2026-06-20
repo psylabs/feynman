@@ -17,6 +17,7 @@ nothing is hard-locked.
 
 import math
 import random
+import statistics
 import time
 from typing import Callable
 
@@ -250,9 +251,43 @@ def _select_diverse_themes(priorities: list[dict], n: int) -> list[dict]:
 
 
 _GROUNDED_OPS = {
+    # tip + split_bill are enforced as dedicated slots in _build_grounded_slots,
+    # so the random fill rotation covers the *other* money problems for variety.
     "money_arithmetic": ("charge_total", "category_difference", "category_share"),
     "weather_math": ("temp_delta", "daily_range", "f_to_c_approx", "wind_delta"),
 }
+
+# split-the-bill advances from 3-5 people to 6-8 once the user is fluent at the
+# base set. Mirrors the diagnosis "mastered" bar (accuracy + speed, enough n).
+SPLIT_BILL_BASE_MAX = 5
+SPLIT_BILL_ADVANCED_MAX = 8
+_SPLIT_UNLOCK_MIN_ATTEMPTS = 6
+_SPLIT_UNLOCK_MIN_ACCURACY = 0.9
+
+
+def _split_bill_max_party(storage, user_id: str, skill_targets: dict) -> int:
+    """Return the largest split-the-bill party size the user has unlocked.
+
+    Advanced divisors (6-8) unlock once they've split among 3-5 people enough
+    times, accurately, and at or under the money latency target. Until then it
+    stays capped at SPLIT_BILL_BASE_MAX (5 people)."""
+    attempts = storage.all_attempts_for_user(user_id, limit=300)
+    base = [
+        a for a in attempts
+        if a.get("skill_id") == "money_arithmetic"
+        and (a.get("parameters") or {}).get("operation") == "split_bill"
+        and (a.get("parameters") or {}).get("people") in (3, 4, 5)
+    ]
+    if len(base) < _SPLIT_UNLOCK_MIN_ATTEMPTS:
+        return SPLIT_BILL_BASE_MAX
+    accuracy = sum(1 for a in base if a.get("correct")) / len(base)
+    if accuracy < _SPLIT_UNLOCK_MIN_ACCURACY:
+        return SPLIT_BILL_BASE_MAX
+    target_ms = skill_targets.get("money_arithmetic")
+    lat = [a["resolution_latency_ms"] for a in base if a.get("resolution_latency_ms")]
+    if target_ms and lat and statistics.median(lat) > target_ms:
+        return SPLIT_BILL_BASE_MAX
+    return SPLIT_BILL_ADVANCED_MAX
 
 
 def _build_grounded_slots(
@@ -271,7 +306,25 @@ def _build_grounded_slots(
         return []
     counts = {sid: storage.skill_attempt_count(user_id, sid) for sid in grounded}
     slots: list[dict] = []
-    for _ in range(n):
+    # Enforce two finance staples up front: a 15% tip and a split-the-bill.
+    if "money_arithmetic" in grounded:
+        max_party = _split_bill_max_party(storage, user_id, skill_targets)
+        money_target = skill_targets.get("money_arithmetic")
+        for fact_key, reason in (
+            ("money:restaurant_tip_15", "grounded: restaurant tip (15%)"),
+            ("money:split_bill", "grounded: split the bill"),
+        ):
+            if len(slots) >= n:
+                break
+            slot = _slot_from_key(
+                fact_key, "money_arithmetic", "grounded",
+                target_ms=money_target, reason=reason,
+            )
+            if fact_key == "money:split_bill" and isinstance(slot["target_fact"], dict):
+                slot["target_fact"]["max_party"] = max_party
+            slots.append(slot)
+            counts["money_arithmetic"] += 1
+    for _ in range(n - len(slots)):
         sid = min(counts, key=lambda s: counts[s])
         op = random.choice(_GROUNDED_OPS.get(sid, ("",)))
         prefix = _GROUNDED_PREFIX.get(sid, sid)

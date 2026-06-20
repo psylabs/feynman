@@ -5,12 +5,13 @@ from server import scheduler
 
 
 class FakeStorage:
-    def __init__(self, skill_ids=None, counts=None):
+    def __init__(self, skill_ids=None, counts=None, attempts=None):
         self.skill_ids = skill_ids or ["multiplication"]
         self.counts = counts or {}
+        self.attempts = attempts or []
 
     def all_attempts_for_user(self, user_id, limit=300):
-        return []
+        return self.attempts
 
     def all_skill_ids(self):
         return self.skill_ids
@@ -114,6 +115,43 @@ class SchedulerSessionPlanTests(unittest.TestCase):
         self.assertEqual(len(plan), 4)  # length // 2
         self.assertTrue(all(s["role"] == "grounded" for s in plan))
         self.assertTrue(all(s["skill_id"] == "money_arithmetic" for s in plan))
+
+
+    def _finance_plan(self, attempts):
+        storage = FakeStorage(
+            skill_ids=["addition", "money_arithmetic"],
+            counts={"addition": 20, "money_arithmetic": 4},
+            attempts=attempts,
+        )
+        with (
+            patch("server.diagnosis.compute_fact_stats", return_value={}),
+            patch("server.diagnosis.recent_regressions", return_value=[]),
+            patch("server.diagnosis.drill_priorities", return_value=[]),
+            patch("server.diagnosis.mastered_for_retention", return_value=[]),
+        ):
+            return scheduler.build_session_plan(storage, "u", 8, lambda *a, **k: None)
+
+    def test_enforces_tip_and_split_finance_slots(self):
+        plan = self._finance_plan([])
+        ops = [s["target_fact"].get("operation") for s in plan
+               if s["skill_id"] == "money_arithmetic" and isinstance(s["target_fact"], dict)]
+        self.assertIn("restaurant_tip_15", ops)
+        self.assertIn("split_bill", ops)
+
+    def test_split_bill_capped_until_unlocked(self):
+        plan = self._finance_plan([])
+        split = next(s for s in plan if (s["target_fact"] or {}).get("operation") == "split_bill")
+        self.assertEqual(split["target_fact"]["max_party"], scheduler.SPLIT_BILL_BASE_MAX)
+
+    def test_split_bill_unlocks_advanced_when_fluent(self):
+        attempts = [
+            {"skill_id": "money_arithmetic", "correct": 1, "resolution_latency_ms": 1500,
+             "parameters": {"operation": "split_bill", "people": 4}}
+            for _ in range(8)
+        ]
+        plan = self._finance_plan(attempts)
+        split = next(s for s in plan if (s["target_fact"] or {}).get("operation") == "split_bill")
+        self.assertEqual(split["target_fact"]["max_party"], scheduler.SPLIT_BILL_ADVANCED_MAX)
 
 
 if __name__ == "__main__":
