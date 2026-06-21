@@ -177,6 +177,27 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
   color: #fff;
 }
 
+/* Live input-level meter shown while recording (so the user can see the mic
+   is picking them up). Segments are created in app.js. */
+.input-meter {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  height: 12px;
+  margin: 0 0 12px 0;
+}
+.input-meter .seg {
+  flex: 1;
+  background: #1c1e22;
+  border-radius: 1px;
+  transition: background 50ms linear;
+}
+.input-meter .seg.on { background: #3f9d52; }
+.input-meter .seg.on.mid { background: #e0a83b; }
+.input-meter .seg.on.hot { background: #b91c1c; }
+
+.skip-voice { width: 100%; margin: 0 0 8px 0; }
+
 .typed-answer {
   display: grid;
   grid-template-columns: 1fr auto auto;

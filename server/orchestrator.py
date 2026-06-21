@@ -288,6 +288,83 @@ class Orchestrator:
         }
         return {"active_state": active_state, "payload": payload}
 
+    def record_manual_skip(
+        self,
+        sid: str,
+        qid: str,
+        prompt_end_ts: float,
+        onset_ts: float,
+        resolution_ts: float,
+        client_meta: dict | None = None,
+    ) -> dict:
+        """Record an intentional skip from the Skip button (tagged distinctly
+        from STT-heard skips so logs can tell them apart)."""
+        q = self._active.get(sid)
+        if not q or q["qid"] != qid:
+            raise ValueError("no active question for this session")
+        skill = self.storage.get_skill(q["skill_id"])
+        if not skill:
+            raise ValueError(f"skill not found: {q['skill_id']}")
+
+        meta = self._sessions.get(sid) or {}
+        target = meta.get("target") or (
+            eval_plan.EVAL_LENGTH if q["mode"] == "eval" else DRILL_LENGTH
+        )
+        self.bus.emit(
+            "answer.manual_skip", session_id=sid, qid=qid,
+            client_meta=client_meta or {},
+        )
+        resolution_lat = (
+            int((resolution_ts - prompt_end_ts) * 1000)
+            if resolution_ts and prompt_end_ts else None
+        )
+        attempt = {
+            "session_id": sid,
+            "skill_id": q["skill_id"],
+            "position_in_session": q["position"],
+            "prompt_text": q["prompt"],
+            "prompt_audio_ms": q["audio_duration_ms"],
+            "prompt_end_ts": prompt_end_ts,
+            "onset_ts": onset_ts,
+            "resolution_ts": resolution_ts,
+            "onset_latency_ms": None,
+            "resolution_latency_ms": resolution_lat,
+            "raw_transcript": None,
+            "parsed_answer": None,
+            "answer_mode": "manual_skip",
+            "expected_answer": q["expected"],
+            "correct": False,
+            "error_magnitude": None,
+            "skipped": True,
+            "parameters": q["parameters"],
+        }
+        attempt_id = self.storage.insert_attempt(attempt)
+        self.bus.emit(
+            "attempt.recorded", attempt_id=attempt_id, skill_id=q["skill_id"],
+            correct=False, skipped=True, resolution_latency_ms=resolution_lat,
+        )
+        mastery.update(
+            self.storage, q["user_id"], q["skill_id"],
+            skill["target_latency_ms"], self.bus.emit,
+        )
+        del self._active[sid]
+        return {
+            "attempt_id": attempt_id,
+            "correct": False,
+            "expected": q["expected"],
+            "parsed": None,
+            "skipped": True,
+            "transcript": None,
+            "onset_latency_ms": None,
+            "resolution_latency_ms": resolution_lat,
+            "rule": "skipped",
+            "feedback_pending": False,
+            "position": q["position"],
+            "target_questions": target,
+            "mode": q["mode"],
+            "manual_skip": True,
+        }
+
     def submit_answer(
         self,
         sid: str,
@@ -355,9 +432,24 @@ class Orchestrator:
             }
 
         if parsed["skipped"]:
-            verdict = {"correct": False, "error_magnitude": None, "rule": "skipped"}
-        else:
-            verdict = grader.grade(parsed["value"], q["expected"], skill["tolerance"])
+            # STT transcribed "skip". With a dedicated Skip button now handling
+            # intentional skips, a heard "skip" is almost always a misrecognition
+            # of missing/unclear audio (see stt.skip_probe), so route it to the
+            # retry path instead of silently recording a skip.
+            self.bus.emit(
+                "answer.stt_skip_retry",
+                session_id=sid, qid=qid, transcript=text,
+                client_meta=client_meta or {},
+            )
+            return {
+                "audio_failed": True,
+                "message": "Didn't catch that — try again. (Tap Skip to skip.)",
+                "transcript": text,
+                "position": q["position"],
+                "target_questions": target,
+            }
+
+        verdict = grader.grade(parsed["value"], q["expected"], skill["tolerance"])
         self.bus.emit(
             "grader.verdict",
             expected=q["expected"],

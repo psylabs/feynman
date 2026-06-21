@@ -12,6 +12,13 @@
   let audioChunks = [];
   let stream = null;
   let recording = false;
+  // Live input-level metering + energy capture (for calibrating a "bad clip"
+  // retry threshold). audioCtx/analyser are torn down after each recording.
+  let audioCtx = null;
+  let analyser = null;
+  let meterRaf = null;
+  let energyFrames = [];
+  const METER_SEGMENTS = 24;
   let advancing = false;
   let advanceTimer = null;
   let lastResult = null;
@@ -430,6 +437,7 @@
     $("btn-next").classList.add("hidden");
     $("status").textContent = "Loading…";
     $("btn-ptt").disabled = true;
+    $("btn-skip-voice").disabled = true;
     $("prompt").textContent = "";
 
     let r;
@@ -450,6 +458,7 @@
     sessionTargetQuestions = r.target_questions || sessionTargetQuestions;
     hideTypedAnswer();
     $("btn-ptt").classList.remove("hidden");
+    $("btn-skip-voice").classList.remove("hidden");
     $("prompt").textContent = r.prompt_text;
     $("position").textContent = `Question ${r.position} of ${r.target_questions}`;
 
@@ -460,6 +469,7 @@
       promptEndTs = Date.now() / 1000;
       $("status").textContent = "Hold to answer (or hold spacebar)";
       $("btn-ptt").disabled = false;
+      $("btn-skip-voice").disabled = false;
     });
     try {
       await audio.play();
@@ -467,6 +477,7 @@
       promptEndTs = Date.now() / 1000;
       $("status").textContent = "Audio blocked — answer now";
       $("btn-ptt").disabled = false;
+      $("btn-skip-voice").disabled = false;
     }
   }
 
@@ -533,6 +544,7 @@
     $("btn-next").classList.add("hidden");
     $("btn-ptt").classList.add("hidden");
     $("btn-ptt").disabled = true;
+    $("btn-skip-voice").classList.add("hidden");
     showTypedAnswer(true);
     $("status").textContent = "Loading...";
     $("prompt").textContent = "";
@@ -576,6 +588,91 @@
     }
   }
 
+  function buildMeter() {
+    const meter = $("input-meter");
+    if (!meter || meter.children.length) return;
+    for (let i = 0; i < METER_SEGMENTS; i++) {
+      const s = document.createElement("span");
+      s.className = "seg";
+      meter.appendChild(s);
+    }
+  }
+
+  function renderMeter(rms) {
+    const meter = $("input-meter");
+    if (!meter) return;
+    const segs = meter.children;
+    const n = segs.length;
+    // Map RMS to a -60..-10 dBFS fill so quiet speech still moves the meter.
+    const db = 20 * Math.log10(rms + 1e-9);
+    const fill = Math.max(0, Math.min(1, (db + 60) / 50));
+    const lit = Math.round(fill * n);
+    for (let i = 0; i < n; i++) {
+      const on = i < lit;
+      const tier = i >= n * 0.85 ? " hot" : i >= n * 0.6 ? " mid" : "";
+      segs[i].className = "seg" + (on ? " on" + tier : "");
+    }
+  }
+
+  function startMetering() {
+    energyFrames = [];
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new Ctx();
+      const src = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      src.connect(analyser);
+    } catch {
+      analyser = null;
+      return; // metering is best-effort; recording proceeds without it
+    }
+    buildMeter();
+    $("input-meter").classList.remove("hidden");
+    const buf = new Float32Array(analyser.fftSize);
+    const tick = () => {
+      if (!analyser) return;
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      energyFrames.push(rms);
+      renderMeter(rms);
+      meterRaf = requestAnimationFrame(tick);
+    };
+    meterRaf = requestAnimationFrame(tick);
+  }
+
+  function stopMetering() {
+    if (meterRaf) cancelAnimationFrame(meterRaf);
+    meterRaf = null;
+    analyser = null;
+    if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
+    const meter = $("input-meter");
+    if (meter) meter.classList.add("hidden");
+  }
+
+  function energyMetrics(clipMs) {
+    const f = energyFrames;
+    const n = f.length;
+    if (!n) return { frames: 0 };
+    const sorted = [...f].sort((a, b) => a - b);
+    const floor = sorted[Math.floor(n * 0.1)];
+    const peak = sorted[n - 1];
+    const mean = f.reduce((a, b) => a + b, 0) / n;
+    // "Voiced" = frames clearly above this clip's own noise floor.
+    const thr = Math.max(floor * 3, 0.01);
+    const voiced = f.filter((r) => r > thr).length;
+    const r4 = (x) => Math.round(x * 1e4) / 1e4;
+    return {
+      frames: n,
+      peak_rms: r4(peak),
+      mean_rms: r4(mean),
+      floor_rms: r4(floor),
+      voiced_ms: Math.round((voiced / n) * clipMs),
+    };
+  }
+
   async function startRecording() {
     if (recording || $("btn-ptt").disabled || !currentQid) return;
 
@@ -609,26 +706,32 @@
       return;
     }
 
+    startMetering();
     mediaRecorder = new MediaRecorder(stream);
     mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) audioChunks.push(e.data);
     };
     mediaRecorder.onstop = async () => {
       const resolutionTs = Date.now() / 1000;
+      const clipMs = Math.round((resolutionTs - onsetTs) * 1000);
+      const energy = energyMetrics(clipMs);
+      stopMetering();
       try {
         if (stream) stream.getTracks().forEach((t) => t.stop());
       } catch {}
       const mime = mediaRecorder.mimeType || "audio/webm";
       const blob = new Blob(audioChunks, { type: mime });
       // Diagnostics: device model + WebView version (UA), actual codec the
-      // device produced, payload size, recorded duration, and chunk count.
+      // device produced, payload size, recorded duration, chunk count, and
+      // input-energy summary (for calibrating a bad-clip retry threshold).
       // Logged server-side so STT failures can be correlated with hardware.
       const clientMeta = {
         ua: navigator.userAgent,
         mime,
         bytes: blob.size,
-        clip_ms: Math.round((resolutionTs - onsetTs) * 1000),
+        clip_ms: clipMs,
         chunks: audioChunks.length,
+        energy,
       };
       await submitAnswer(blob, resolutionTs, clientMeta);
     };
@@ -641,8 +744,41 @@
     $("btn-ptt").classList.remove("recording");
     $("btn-ptt").textContent = "Press & hold to answer";
     $("btn-ptt").disabled = true;
+    $("btn-skip-voice").disabled = true;
     $("status").textContent = "Transcribing…";
     if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
+  }
+
+  async function submitVoiceSkip() {
+    if (!currentQid || !sessionId || recording) return;
+    if ($("btn-skip-voice").disabled) return;
+    $("btn-ptt").disabled = true;
+    $("btn-skip-voice").disabled = true;
+    $("status").textContent = "Skipping…";
+    const resolutionTs = Date.now() / 1000;
+    const fd = new FormData();
+    fd.append("session_id", sessionId);
+    fd.append("qid", currentQid);
+    fd.append("prompt_end_ts", String(promptEndTs));
+    fd.append("onset_ts", String(onsetTs || promptEndTs || resolutionTs));
+    fd.append("resolution_ts", String(resolutionTs));
+    fd.append("manual_skip", "true");
+
+    let r;
+    try {
+      r = await fetch("/session/submit", { method: "POST", body: fd }).then((res) => res.json());
+    } catch {
+      $("status").textContent = "Skip failed";
+      $("btn-ptt").disabled = false;
+      $("btn-skip-voice").disabled = false;
+      return;
+    }
+    lastResult = r;
+    currentAttemptId = r.attempt_id || null;
+    renderAttemptResult(r);
+    if (advancing) return;
+    advancing = true;
+    advanceTimer = setTimeout(advanceNow, 800);
   }
 
   async function submitAnswer(blob, resolutionTs, clientMeta) {
@@ -672,6 +808,7 @@
       $("feedback").textContent = "";
       $("btn-next").classList.add("hidden");
       $("btn-ptt").disabled = false;
+      $("btn-skip-voice").disabled = false;
       return;
     }
 
@@ -1450,6 +1587,7 @@
     if (!typedOnsetTs) typedOnsetTs = Date.now() / 1000;
   });
   $("btn-skip-typed")?.addEventListener("click", () => submitTypedAnswer("skip"));
+  $("btn-skip-voice")?.addEventListener("click", () => submitVoiceSkip());
 
   const ptt = $("btn-ptt");
   ptt.addEventListener("pointerdown", (e) => {
