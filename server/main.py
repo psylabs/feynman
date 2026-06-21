@@ -25,6 +25,7 @@ from server.events import EventBus  # noqa: E402
 from server.orchestrator import Orchestrator  # noqa: E402
 from server.storage import Storage  # noqa: E402
 from server.sync import sync_records  # noqa: E402
+from server import updates  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
@@ -448,6 +449,23 @@ class NoCacheStaticFiles(StaticFiles):
         response.headers["Pragma"] = "no-cache"
         return response
 
+
+BUNDLES_DIR = DATA_DIR / "bundles"
+BUNDLES_DIR.mkdir(parents=True, exist_ok=True)
+PUBLIC_BASE = os.environ.get(
+    "FEYNMAN_PUBLIC_BASE", "https://pips-mac-mini.tail72bfb3.ts.net:8765"
+)
+
+
+@app.post("/app/updates")
+async def app_updates(info: dict):
+    # `version_name` is the running bundle version (confirmed in Task 1 against
+    # the plugin's Android AppInfos source).
+    latest = updates.read_latest(BUNDLES_DIR)
+    return updates.build_manifest(latest, info.get("version_name"), PUBLIC_BASE)
+
+
+app.mount("/app/bundles", StaticFiles(directory=str(BUNDLES_DIR)), name="bundles")
 
 # Static frontend mounted last so API routes take precedence
 app.mount("/", NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="static")
