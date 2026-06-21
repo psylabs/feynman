@@ -1,6 +1,6 @@
 // scripts/publish-bundle.mjs — zip web/ and bump the OTA manifest. Local-only.
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { writeFileSync, mkdirSync, renameSync, readdirSync, statSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -33,8 +33,18 @@ try {
     resolve(bundlesDir, "latest.json"),
     JSON.stringify({ version: sha, checksum, file: `${sha}.zip` }, null, 2) + "\n",
   );
+
+  // 5. Prune old bundles — only latest.json is ever served. Keep the few most
+  //    recent so a bad release can be rolled back by repointing latest.json.
+  const KEEP = 3;
+  readdirSync(bundlesDir)
+    .filter((f) => f.endsWith(".zip"))
+    .map((f) => ({ f, t: statSync(resolve(bundlesDir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t)
+    .slice(KEEP)
+    .forEach(({ f }) => rmSync(resolve(bundlesDir, f)));
 } finally {
-  // 5. Restore build-info.js to its committed (null) state — keep the tree clean.
+  // 6. Restore build-info.js to its committed (null) state — keep the tree clean.
   run("git", ["checkout", "--", "web/build-info.js"]);
 }
 console.log(`Published ${sha}`);
