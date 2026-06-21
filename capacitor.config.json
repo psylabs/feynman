@@ -7,5 +7,12 @@
   },
   "android": {
     "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorUpdater": {
+      "updateUrl": "https://pips-mac-mini.tail72bfb3.ts.net:8765/app/updates",
+      "statsUrl": "",
+      "autoUpdate": true
+    }
   }
 }
