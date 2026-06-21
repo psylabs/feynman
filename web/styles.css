@@ -196,7 +196,16 @@ button.tiny { font-size: 11px; padding: 4px 8px; }
 .input-meter .seg.on.mid { background: #e0a83b; }
 .input-meter .seg.on.hot { background: #b91c1c; }
 
-.skip-voice { width: 100%; margin: 0 0 8px 0; }
+/* Small and pushed to the right so it isn't mis-tapped right after releasing
+   the full-width press-and-hold button directly above it. */
+.skip-voice {
+  display: block;
+  width: fit-content;
+  margin: 0 0 8px auto;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: #888;
+}
 
 .typed-answer {
   display: grid;
