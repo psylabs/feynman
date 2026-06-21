@@ -17,23 +17,24 @@ const sha = run("git", ["rev-parse", "--short", "HEAD"]);
 
 // 2. Stamp build-info.js from HEAD so the in-app version readout tracks the OTA bundle.
 run("node", ["scripts/write-build-info.mjs"]);
+try {
+  // 3. Zip web/ with the Capgo CLI (produces zip + sha256 checksum).
+  //    Contract confirmed in Task 1: --json prints {bundle, filename, checksum};
+  //    `filename` is a BASENAME written into cwd (= root here); checksum is hex sha256.
+  //    --no-code-check skips Capgo's JS bundler heuristics (we ship raw web/).
+  const out = run("npx", ["@capgo/cli", "bundle", "zip", "--path", "web", "--no-code-check", "--json"]);
+  const { filename, checksum } = JSON.parse(out);
 
-// 3. Zip web/ with the Capgo CLI (produces zip + sha256 checksum).
-//    Contract confirmed in Task 1: --json prints {bundle, filename, checksum};
-//    `filename` is a BASENAME written into cwd (= root here); checksum is hex sha256.
-//    --no-code-check skips Capgo's JS bundler heuristics (we ship raw web/).
-const out = run("npx", ["@capgo/cli", "bundle", "zip", "--path", "web", "--no-code-check", "--json"]);
-const { filename, checksum } = JSON.parse(out);
-
-// 4. Move zip into the served dir and write the manifest pointer.
-const bundlesDir = resolve(root, "data/bundles");
-mkdirSync(bundlesDir, { recursive: true });
-renameSync(resolve(root, filename), resolve(bundlesDir, `${sha}.zip`));
-writeFileSync(
-  resolve(bundlesDir, "latest.json"),
-  JSON.stringify({ version: sha, checksum, file: `${sha}.zip` }, null, 2) + "\n",
-);
-
-// 5. Restore build-info.js to its committed (null) state — keep the tree clean.
-run("git", ["checkout", "--", "web/build-info.js"]);
+  // 4. Move zip into the served dir and write the manifest pointer.
+  const bundlesDir = resolve(root, "data/bundles");
+  mkdirSync(bundlesDir, { recursive: true });
+  renameSync(resolve(root, filename), resolve(bundlesDir, `${sha}.zip`));
+  writeFileSync(
+    resolve(bundlesDir, "latest.json"),
+    JSON.stringify({ version: sha, checksum, file: `${sha}.zip` }, null, 2) + "\n",
+  );
+} finally {
+  // 5. Restore build-info.js to its committed (null) state — keep the tree clean.
+  run("git", ["checkout", "--", "web/build-info.js"]);
+}
 console.log(`Published ${sha}`);
