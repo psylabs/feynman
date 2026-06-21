@@ -13,7 +13,7 @@ def build_manifest(latest: dict | None, current_version: str | None, public_base
         "kind": "up_to_date",
         "message": "no update available",
     }
-    if not latest or not latest.get("version"):
+    if not latest or not latest.get("version") or not latest.get("file"):
         return no_update
     if current_version == latest["version"]:
         return no_update
