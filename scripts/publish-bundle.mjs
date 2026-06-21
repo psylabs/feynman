@@ -9,7 +9,7 @@ const run = (cmd, args) =>
   execFileSync(cmd, args, { cwd: root, encoding: "utf8" }).trim();
 
 // 1. Divergence guard: a dirty tree means the zip wouldn't match any commit.
-if (run("git", ["status", "--porcelain", "--untracked-files=no"])) {
+if (run("git", ["status", "--porcelain", "--", "web"])) {
   console.error("Working tree is dirty — commit before publishing so the OTA bundle == a real commit.");
   process.exit(1);
 }
