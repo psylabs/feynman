@@ -5,7 +5,8 @@
   "description": "Capacitor mobile wrapper for the Feynman personal cognitive trainer.",
   "scripts": {
     "cap:sync": "cap sync android",
-    "cap:open:android": "cap open android"
+    "cap:open:android": "cap open android",
+    "publish": "node scripts/publish-bundle.mjs"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.0",
