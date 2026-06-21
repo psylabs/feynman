@@ -122,10 +122,15 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
         )
         if not finance_rows:
             return _fallback_problem()
+        # A specific charge may be pinned by the scheduler so the two finance
+        # slots in one session don't land on the same merchant.
+        charge = (target or {}).get("charge")
         if operation == "restaurant_tip_15":
-            return _restaurant_tip_15(finance_rows)
+            return _restaurant_tip_15(finance_rows, charge=charge)
         return _split_bill(
-            finance_rows, max_party=(target or {}).get("max_party", SPLIT_BILL_BASE_MAX)
+            finance_rows,
+            max_party=(target or {}).get("max_party", SPLIT_BILL_BASE_MAX),
+            charge=charge,
         )
 
     rows = rows if rows is not None else load_transactions()
@@ -153,10 +158,39 @@ SPLIT_BILL_ADVANCED_MAX = 8
 SPLIT_MIN_SHARE = 3  # don't generate splits where each person owes < $3
 
 
-def _restaurant_tip_15(rows: list[dict]) -> dict:
+def _dining_pool(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if _is_restaurant_category(r.get("category", ""))] or rows
+
+
+def pick_finance_charges(rows: list[dict] | None = None) -> dict:
+    """Pick two DISTINCT recent dining charges for the tip and split slots.
+
+    Returns ``{"restaurant_tip_15": row|None, "split_bill": row|None}``. The two
+    rows are different merchants whenever possible, so a single session never
+    repeats the same restaurant across its finance problems. Selection is
+    uniform among eligible charges (no amount weighting) to keep variety across
+    sessions. The split charge is drawn from bills big enough for a non-trivial
+    split.
+    """
+    if rows is None:
+        rows = load_recent_plaid_transactions() or load_transactions()
+    dining = _dining_pool(rows)
+    if not dining:
+        return {"restaurant_tip_15": None, "split_bill": None}
+    split_pool = [r for r in dining if r["amount"] >= SPLIT_MIN_SHARE * min(SPLIT_BILL_BASE_DIVISORS)] or dining
+    split_row = random.choice(split_pool)
+    tip_pool = [r for r in dining if _label_key(r) != _label_key(split_row)] or dining
+    tip_row = random.choice(tip_pool)
+    return {"restaurant_tip_15": tip_row, "split_bill": split_row}
+
+
+def _label_key(row: dict) -> str:
+    return _clean_label(row.get("payee"), row.get("category")).casefold()
+
+
+def _restaurant_tip_15(rows: list[dict], charge: dict | None = None) -> dict:
     """Ask for a 15% tip on a real recent restaurant bill (rounded to $1)."""
-    pool = [r for r in rows if _is_restaurant_category(r.get("category", ""))] or rows
-    row = random.choice(pool)
+    row = charge or random.choice(_dining_pool(rows))
     label = _clean_label(row["payee"], row["category"])
     bill = _swag(row["amount"])
     tip = _round_tip(bill, TIP_PERCENT)
@@ -178,7 +212,8 @@ def _restaurant_tip_15(rows: list[dict]) -> dict:
     }
 
 
-def _split_bill(rows: list[dict], max_party: int = SPLIT_BILL_BASE_MAX) -> dict:
+def _split_bill(rows: list[dict], max_party: int = SPLIT_BILL_BASE_MAX,
+                charge: dict | None = None) -> dict:
     """Split a real recent charge evenly among N people; ask for each share.
 
     Party size is drawn from the divisors allowed by `max_party`. The bill is
@@ -186,10 +221,14 @@ def _split_bill(rows: list[dict], max_party: int = SPLIT_BILL_BASE_MAX) -> dict:
     stays sticky (real merchant/day) but divides evenly for mental math.
     """
     # You split restaurant/bar checks, not a Lyft or a loan payment. Prefer
-    # dining charges and lean toward the larger ones (weighted by amount) so
-    # the division isn't trivial.
-    pool = [r for r in rows if _is_restaurant_category(r.get("category", ""))] or rows
-    row = random.choices(pool, weights=[max(1.0, r["amount"]) for r in pool], k=1)[0]
+    # dining charges big enough that the split isn't trivial; pick uniformly so
+    # variety isn't collapsed onto the single largest bill.
+    if charge is not None:
+        row = charge
+    else:
+        dining = _dining_pool(rows)
+        pool = [r for r in dining if r["amount"] >= SPLIT_MIN_SHARE * min(SPLIT_BILL_BASE_DIVISORS)] or dining
+        row = random.choice(pool)
     label = _clean_label(row["payee"], row["category"])
     allowed = [
         d for d in SPLIT_BILL_BASE_DIVISORS + SPLIT_BILL_ADVANCED_DIVISORS

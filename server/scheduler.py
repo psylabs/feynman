@@ -21,7 +21,7 @@ import statistics
 import time
 from typing import Callable
 
-from server import diagnosis
+from server import diagnosis, money
 
 
 def pick_drill(
@@ -307,9 +307,11 @@ def _build_grounded_slots(
     counts = {sid: storage.skill_attempt_count(user_id, sid) for sid in grounded}
     slots: list[dict] = []
     # Enforce two finance staples up front: a 15% tip and a split-the-bill.
+    # Pin distinct merchants so the two never land on the same restaurant.
     if "money_arithmetic" in grounded:
         max_party = _split_bill_max_party(storage, user_id, skill_targets)
         money_target = skill_targets.get("money_arithmetic")
+        charges = money.pick_finance_charges()
         for fact_key, reason in (
             ("money:restaurant_tip_15", "grounded: restaurant tip (15%)"),
             ("money:split_bill", "grounded: split the bill"),
@@ -320,8 +322,12 @@ def _build_grounded_slots(
                 fact_key, "money_arithmetic", "grounded",
                 target_ms=money_target, reason=reason,
             )
-            if fact_key == "money:split_bill" and isinstance(slot["target_fact"], dict):
-                slot["target_fact"]["max_party"] = max_party
+            if isinstance(slot["target_fact"], dict):
+                charge = charges.get(fact_key.split(":", 1)[1])
+                if charge is not None:
+                    slot["target_fact"]["charge"] = charge
+                if fact_key == "money:split_bill":
+                    slot["target_fact"]["max_party"] = max_party
             slots.append(slot)
             counts["money_arithmetic"] += 1
     for _ in range(n - len(slots)):

@@ -60,6 +60,19 @@ class MoneyTests(unittest.TestCase):
                 base["expected"] * base["parameters"]["people"],
             )
 
+    def test_pick_finance_charges_returns_distinct_merchants(self):
+        rows = [
+            {"date": "2026-06-19", "payee": m, "category": "Dining", "amount": amt}
+            for m, amt in [("Vivibowl", 36.0), ("Sweetgreen", 17.0), ("Chopt", 16.0)]
+        ]
+        for _ in range(50):
+            picks = money.pick_finance_charges(rows)
+            self.assertIsNotNone(picks["restaurant_tip_15"])
+            self.assertIsNotNone(picks["split_bill"])
+            self.assertNotEqual(
+                picks["restaurant_tip_15"]["payee"], picks["split_bill"]["payee"]
+            )
+
     def test_restaurant_tip_15_is_fifteen_percent_rounded(self):
         rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Food & Dining", "amount": 80.0}]
         p = money.generate_problem(rows, target={"operation": "restaurant_tip_15"})
