@@ -109,6 +109,13 @@ Hard-won notes for future agents working on the Capacitor mobile migration.
   likely fix (acquire the mic once per session instead of per question) and the
   detection already shipped are written up there; verify against the
   `client_meta.energy` telemetry rather than guessing.
+- **Prompt audio (TTS playback) garbled / cut off / too fast** (suggested
+  2026-06-22): root cause was streaming a WAV and calling `play()` immediately —
+  at 1.5x over the network the buffer underruns. Fixed by `loadBufferedAudio()`
+  in `web/app.js` (fetch the clip to a blob and play that, fully in memory). **If
+  this recurs after that fix,** the next lever is shrinking the transfer: switch
+  TTS from WAV to MP3/Opus (`_FORMAT` in `server/tts.py`) — ~10x smaller — which
+  also touches the duration calc, seed pack, and the `tts_*.wav` audio cache.
 - `web/config.js` (loads first) rewrites `/`-prefixed `fetch`/`EventSource`
   URLs and TTS `audio_url` (via `apiUrl()`) to the backend base, and gates the
   service worker to browser-only. `server/main.py` has a CORS regex for

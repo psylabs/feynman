@@ -6,7 +6,7 @@ import vm from "node:vm";
 // app.js runs init at load and touches a lot of DOM. Auto-vivify an element
 // for any id and stub the few globals it references, then read the pure
 // helper it exposes (window.isDeadCapture).
-function loadAppModule() {
+function loadAppModule({ fetchImpl } = {}) {
   const make = () => ({
     textContent: "", innerHTML: "", value: "", disabled: false, className: "",
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
@@ -15,13 +15,15 @@ function loadAppModule() {
     setPointerCapture() {}, releasePointerCapture() {}, querySelector() { return null; },
   });
   const els = new Map();
+  const audioSrcs = [];
   const context = {
     console,
     setTimeout, clearTimeout, setInterval, clearInterval,
     requestAnimationFrame: () => 0, cancelAnimationFrame() {},
-    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({}) })),
+    URL: { createObjectURL: () => "blob:stub", revokeObjectURL() {} },
     CustomEvent: function (type, init) { return { type, detail: init?.detail }; },
-    Audio: function () { return { play: async () => {}, addEventListener() {}, playbackRate: 1 }; },
+    Audio: function (src) { audioSrcs.push(src); return { src, play: async () => {}, addEventListener() {}, playbackRate: 1 }; },
     navigator: { userAgent: "test", mediaDevices: {} },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     document: {
@@ -37,10 +39,10 @@ function loadAppModule() {
   };
   context.window.window = context.window;
   vm.runInNewContext(readFileSync("web/app.js", "utf8"), context);
-  return context.window.isDeadCapture;
+  return { ...context.window, audioSrcs };
 }
 
-const isDeadCapture = loadAppModule();
+const { isDeadCapture } = loadAppModule();
 
 test("flags a header-only (~110 byte) clip as dead", () => {
   assert.equal(isDeadCapture({ bytes: 110, energy: { frames: 25, peak_rms: 0 } }), true);
@@ -62,4 +64,24 @@ test("does NOT flag when metering failed to init (no energy frames)", () => {
 
 test("guards against a null/empty meta", () => {
   assert.equal(isDeadCapture(null), false);
+});
+
+test("loadBufferedAudio fetches network URLs (buffer before play)", async () => {
+  const calls = [];
+  const { loadBufferedAudio } = loadAppModule({
+    fetchImpl: async (u) => { calls.push(u); return { ok: true, blob: async () => ({}) }; },
+  });
+  const a = await loadBufferedAudio("/audio/x.wav");
+  assert.ok(calls.includes("/audio/x.wav")); // streamed into memory, not played live
+  assert.equal(a.playbackRate, 1.5);
+});
+
+test("loadBufferedAudio passes data: URLs straight through (no fetch)", async () => {
+  const calls = [];
+  const { loadBufferedAudio } = loadAppModule({
+    fetchImpl: async (u) => { calls.push(u); return { ok: true, blob: async () => ({}) }; },
+  });
+  const a = await loadBufferedAudio("data:audio/wav;base64,AAAA");
+  assert.ok(!calls.some((u) => u.startsWith("data:")));
+  assert.equal(a.src, "data:audio/wav;base64,AAAA");
 });

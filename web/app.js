@@ -462,9 +462,15 @@
     $("prompt").textContent = r.prompt_text;
     $("position").textContent = `Question ${r.position} of ${r.target_questions}`;
 
-    const audio = new Audio(apiUrl(r.audio_url));
-    audio.playbackRate = 1.5;
     $("status").textContent = "Listening…";
+    let audio;
+    try {
+      audio = await loadBufferedAudio(apiUrl(r.audio_url));
+    } catch {
+      // Buffering failed — stream directly so we still attempt playback.
+      audio = new Audio(apiUrl(r.audio_url));
+      audio.playbackRate = 1.5;
+    }
     audio.addEventListener("ended", () => {
       promptEndTs = Date.now() / 1000;
       $("status").textContent = "Hold to answer (or hold spacebar)";
@@ -577,9 +583,14 @@
       enable("Type answer");
       return;
     }
-    const audio = new Audio(audioSrc);
-    audio.playbackRate = 1.5;
     $("status").textContent = "Listening...";
+    let audio;
+    try {
+      audio = await loadBufferedAudio(audioSrc);
+    } catch {
+      audio = new Audio(audioSrc);
+      audio.playbackRate = 1.5;
+    }
     audio.addEventListener("ended", () => enable("Type answer"));
     try {
       await audio.play();
@@ -587,6 +598,29 @@
       enable("Type answer");
     }
   }
+
+  // Fully buffer prompt audio before playing. Streaming a WAV and calling
+  // play() immediately underruns at 1.5x over the network — the clip cuts off
+  // or garbles. Fetching to a blob first (like the offline data-URL path,
+  // which never underran) guarantees the whole clip is in memory. The object
+  // URL is revoked once playback ends. data: URLs are already in-memory, so
+  // they bypass the fetch.
+  async function loadBufferedAudio(src) {
+    if (src && src.startsWith("data:")) {
+      const a = new Audio(src);
+      a.playbackRate = 1.5;
+      return a;
+    }
+    const res = await fetch(src);
+    if (!res.ok) throw new Error("audio HTTP " + res.status);
+    const url = URL.createObjectURL(await res.blob());
+    const a = new Audio(url);
+    a.playbackRate = 1.5;
+    a.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+    a.addEventListener("error", () => URL.revokeObjectURL(url), { once: true });
+    return a;
+  }
+  window.loadBufferedAudio = loadBufferedAudio;
 
   function buildMeter() {
     const meter = $("input-meter");
