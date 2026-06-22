@@ -103,6 +103,12 @@ Hard-won notes for future agents working on the Capacitor mobile migration.
 - The APK **bundles** `web/` and serves it from `https://localhost` (a secure
   context, so the mic works). API calls go **cross-origin** to the backend over
   the Tailscale HTTPS hostname.
+- **If voice answers keep failing intermittently** (empty/~110-byte clips, dead
+  loudness meter, "works then breaks for a session then recovers"), read
+  `docs/webview-mic-capture-strategy.md` before touching the recording code. The
+  likely fix (acquire the mic once per session instead of per question) and the
+  detection already shipped are written up there; verify against the
+  `client_meta.energy` telemetry rather than guessing.
 - `web/config.js` (loads first) rewrites `/`-prefixed `fetch`/`EventSource`
   URLs and TTS `audio_url` (via `apiUrl()`) to the backend base, and gates the
   service worker to browser-only. `server/main.py` has a CORS regex for
