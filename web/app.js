@@ -673,6 +673,24 @@
     };
   }
 
+  // True when a clip clearly captured no microphone signal this session:
+  // either a header-only WebM (~110 bytes) or recorded near-silence
+  // (peak RMS below DEAD_PEAK_RMS). Conservative on purpose — when energy
+  // wasn't measured (metering failed to init), we DON'T flag, to avoid
+  // false-rejecting a real answer. Pure function for testability.
+  const DEAD_BYTES = 200;
+  const DEAD_PEAK_RMS = 0.01;
+  function isDeadCapture(meta) {
+    if (!meta) return false;
+    if (typeof meta.bytes === "number" && meta.bytes <= DEAD_BYTES) return true;
+    const e = meta.energy;
+    if (e && e.frames > 0 && typeof e.peak_rms === "number") {
+      return e.peak_rms < DEAD_PEAK_RMS;
+    }
+    return false;
+  }
+  window.isDeadCapture = isDeadCapture;
+
   async function startRecording() {
     if (recording || $("btn-ptt").disabled || !currentQid) return;
 
@@ -733,9 +751,24 @@
         chunks: audioChunks.length,
         energy,
       };
+      // Dead-capture guard: when the mic track delivered no signal this
+      // session (header-only ~110-byte clip, or recorded near-silence), don't
+      // ship silence to STT — it just comes back empty/"skip" and confuses the
+      // user. Re-prompt locally instead. Skip/typed remain available, so this
+      // is never a dead end. (peak_rms<0.01 is ~4x below the quietest real
+      // speech we've logged, so it won't false-reject a soft answer.)
+      if (isDeadCapture(clientMeta)) {
+        $("status").textContent = "Mic didn't catch that — try again.";
+        $("btn-ptt").disabled = false;
+        $("btn-skip-voice").disabled = false;
+        return;
+      }
       await submitAnswer(blob, resolutionTs, clientMeta);
     };
-    mediaRecorder.start();
+    // Timeslice: flush an audio chunk every 250ms instead of only at stop, so a
+    // momentary encoder stall on Android WebView costs one chunk, not the whole
+    // clip (the header-only 110-byte empties).
+    mediaRecorder.start(250);
   }
 
   async function stopRecording() {
