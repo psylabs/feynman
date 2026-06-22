@@ -599,7 +599,7 @@ table.leaderboard td { vertical-align: middle; }
 .fb-row {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
   margin-top: 12px;
   font-size: 13px;
   flex-wrap: wrap;
@@ -639,9 +639,7 @@ table.leaderboard td { vertical-align: middle; }
 .fb-row .fb-prompt {
   flex: 1 1 200px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
 }
 #fb-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #fb-list .fb-row { border-bottom: 1px solid #1f2228; padding-bottom: 6px; margin-top: 0; }
