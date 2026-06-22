@@ -1,0 +1,3 @@
+#!/bin/bash
+# Auto-publish OTA bundle after a commit that touches web/. See auto-publish.sh.
+exec "$(git rev-parse --show-toplevel)/scripts/githooks/auto-publish.sh"

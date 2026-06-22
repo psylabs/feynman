@@ -144,6 +144,18 @@ Hard-won notes for future agents working on the Capacitor mobile migration.
 - **Certs live in gitignored `certs/` and expire ~90 days** (Let's Encrypt;
   current expiry 2026-09-16). Re-mint with `tailscale cert` before then.
 - After changing `web/` or `capacitor.config.json`, run `npx cap sync android`.
+- **OTA auto-publish (set up 2026-06-22): web changes ship automatically — do
+  NOT hand-run `npm run publish`.** A git hook (`scripts/githooks/`, activated by
+  `git config core.hooksPath scripts/githooks`) republishes the OTA bundle on any
+  post-commit/post-merge that touches `web/`. It zips `web/` into `data/bundles/`
+  and repoints `latest.json`; the device polls that and applies on relaunch. So a
+  committed web change reaches the phone with no extra step. Caveats: the hook
+  only runs **on the mini** (where `core.hooksPath` is set and bundles are
+  served) and only fires for commits made here; if you `git reset`/rebuild
+  history, re-publish current HEAD with `npm run publish`. Publish log:
+  `logs/ota-publish.log`. Served bundle: `data/bundles/latest.json` (`version` =
+  committed sha). If the device seems stale, check that `latest.json`'s version
+  matches HEAD.
 
 ---
 

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Auto-publish OTA bundle after a merge/pull that touches web/ (e.g. rebasing
+# onto origin brings in web changes from another machine). See auto-publish.sh.
+exec "$(git rev-parse --show-toplevel)/scripts/githooks/auto-publish.sh"
