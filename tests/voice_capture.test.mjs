@@ -66,6 +66,35 @@ test("guards against a null/empty meta", () => {
   assert.equal(isDeadCapture(null), false);
 });
 
+test("reuses a live unmuted session mic stream", () => {
+  const { shouldReacquireMicStream } = loadAppModule();
+  const stream = {
+    active: true,
+    getAudioTracks: () => [{ readyState: "live", muted: false, enabled: true }],
+  };
+  assert.equal(shouldReacquireMicStream(stream), false);
+});
+
+test("reacquires missing, ended, or muted mic streams", () => {
+  const { shouldReacquireMicStream } = loadAppModule();
+  const ended = {
+    active: true,
+    getAudioTracks: () => [{ readyState: "ended", muted: false, enabled: true }],
+  };
+  const muted = {
+    active: true,
+    getAudioTracks: () => [{ readyState: "live", muted: true, enabled: true }],
+  };
+  const inactive = {
+    active: false,
+    getAudioTracks: () => [{ readyState: "live", muted: false, enabled: true }],
+  };
+  assert.equal(shouldReacquireMicStream(null), true);
+  assert.equal(shouldReacquireMicStream(ended), true);
+  assert.equal(shouldReacquireMicStream(muted), true);
+  assert.equal(shouldReacquireMicStream(inactive), true);
+});
+
 test("loadBufferedAudio fetches network URLs (buffer before play)", async () => {
   const calls = [];
   const { loadBufferedAudio } = loadAppModule({

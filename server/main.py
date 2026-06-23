@@ -408,6 +408,19 @@ def post_feedback(payload: dict):
     return {"id": fid}
 
 
+@app.post("/client-log")
+def client_log(payload: dict):
+    raw_type = str(payload.get("type") or "event").lower()
+    safe_type = "".join(
+        ch if ch.isalnum() or ch in "._-" else "_" for ch in raw_type
+    )[:80] or "event"
+    data = dict(payload)
+    data.pop("type", None)
+    data.pop("ts", None)
+    bus.emit(f"client.{safe_type}", **data)
+    return {"ok": True}
+
+
 @app.get("/audio/{name}")
 def audio(name: str):
     p = tts.get_audio_path(name)

@@ -11,7 +11,10 @@
   let mediaRecorder = null;
   let audioChunks = [];
   let stream = null;
+  let micStreamReady = null;
+  let micAcquireSeq = 0;
   let recording = false;
+  let pendingStopRecording = false;
   // Live input-level metering + energy capture (for calibrating a "bad clip"
   // retry threshold). audioCtx/analyser are torn down after each recording.
   let audioCtx = null;
@@ -39,6 +42,7 @@
   async function showScreen(id) {
     // Leaving an active session via nav: end it cleanly.
     if (sessionId && id !== "screen-session" && id !== "screen-review") {
+      releaseMicStream("nav");
       if (!offlineSession) {
         try {
           await fetch("/session/end", {
@@ -136,6 +140,117 @@
     offlineTarget = 0;
     offlineReviewAttempts = [];
     typedOnsetTs = null;
+  }
+
+  function audioTracks(s) {
+    if (!s) return [];
+    if (typeof s.getAudioTracks === "function") return s.getAudioTracks();
+    if (typeof s.getTracks === "function") return s.getTracks().filter((t) => t.kind === "audio");
+    return [];
+  }
+
+  function shouldReacquireMicStream(s) {
+    const tracks = audioTracks(s);
+    if (!s || s.active === false || !tracks.length) return true;
+    return !tracks.some((t) => t.readyState === "live" && !t.muted && t.enabled !== false);
+  }
+  window.shouldReacquireMicStream = shouldReacquireMicStream;
+
+  function micStreamSnapshot(s) {
+    const tracks = audioTracks(s);
+    return {
+      active: !!(s && s.active !== false),
+      audio_tracks: tracks.map((t) => {
+        let settings = {};
+        try {
+          const raw = t.getSettings ? t.getSettings() : {};
+          for (const k of ["sampleRate", "sampleSize", "channelCount", "echoCancellation", "noiseSuppression", "autoGainControl", "latency"]) {
+            if (raw && raw[k] != null) settings[k] = raw[k];
+          }
+        } catch {}
+        return {
+          readyState: t.readyState || "",
+          muted: !!t.muted,
+          enabled: t.enabled !== false,
+          settings,
+        };
+      }),
+    };
+  }
+  window.micStreamSnapshot = micStreamSnapshot;
+
+  function logClientEvent(type, data) {
+    fetch("/client-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, session_id: sessionId, qid: currentQid, ...(data || {}) }),
+    }).catch(() => {});
+  }
+
+  function releaseMicStream(reason) {
+    micAcquireSeq += 1;
+    const old = stream;
+    stream = null;
+    if (!old) return;
+    const snapshot = micStreamSnapshot(old);
+    try {
+      old.getTracks().forEach((t) => t.stop());
+    } catch {}
+    logClientEvent("mic_released", { reason, stream: snapshot });
+  }
+
+  function micErrorMessage(err) {
+    const name = err && err.name;
+    return name === "NotAllowedError" ? "Microphone permission denied - allow it in browser settings."
+      : name === "NotFoundError" ? "No microphone found."
+      : (name === "SecurityError" || name === "NotSupportedError") ? "Microphone needs HTTPS. Use Tailscale or open this on the Mac."
+      : `Microphone error: ${name || "unknown"}`;
+  }
+
+  async function ensureMicStream(reason) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      const err = new Error("getUserMedia unavailable");
+      err.name = "NotSupportedError";
+      throw err;
+    }
+    if (!shouldReacquireMicStream(stream)) return stream;
+    if (micStreamReady) return micStreamReady;
+
+    const previous = stream ? micStreamSnapshot(stream) : null;
+    if (stream) releaseMicStream("reacquire");
+    const seq = ++micAcquireSeq;
+    logClientEvent("mic_acquire_start", { reason, previous_stream: previous });
+    micStreamReady = navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((s) => {
+        if (seq !== micAcquireSeq) {
+          try { s.getTracks().forEach((t) => t.stop()); } catch {}
+          return null;
+        }
+        stream = s;
+        logClientEvent("mic_acquired", { reason, stream: micStreamSnapshot(stream) });
+        for (const track of audioTracks(stream)) {
+          track.onmute = () => logClientEvent("mic_track_muted", { stream: micStreamSnapshot(stream) });
+          track.onunmute = () => logClientEvent("mic_track_unmuted", { stream: micStreamSnapshot(stream) });
+          track.onended = () => logClientEvent("mic_track_ended", { stream: micStreamSnapshot(stream) });
+        }
+        return stream;
+      })
+      .catch((err) => {
+        logClientEvent("mic_acquire_error", { reason, name: err?.name || "unknown", message: String(err?.message || err || "") });
+        throw err;
+      })
+      .finally(() => {
+        micStreamReady = null;
+      });
+    return micStreamReady;
+  }
+
+  async function warmMicStream() {
+    try {
+      await ensureMicStream("session_start");
+    } catch {
+      // startRecording will surface the user-facing mic error when needed.
+    }
   }
 
   function offlineAvailable() {
@@ -380,6 +495,8 @@
     if (r.detail) return alert(r.detail);
     resetOfflineSession();
     sessionId = r.session_id;
+    currentQid = null;
+    currentAttemptId = null;
     currentMode = r.mode;
     currentSessionPlan = r.session_plan || null;
     sessionPosition = 0;
@@ -391,6 +508,8 @@
     $("result").textContent = "";
     $("result").className = "";
     $("feedback").textContent = "";
+    $("status").textContent = "Preparing mic...";
+    await warmMicStream();
     await nextQuestion();
   }
 
@@ -405,6 +524,7 @@
     }
 
     resetOfflineSession();
+    releaseMicStream("offline_start");
     offlineSession = true;
     offlineUserId = user.id;
     offlineTarget = targetQuestions || 5;
@@ -526,6 +646,7 @@
     }
     offlineSession = true;
     offlineUserId = user.id;
+    releaseMicStream("offline_continue");
     offlineTarget = sessionTargetQuestions || 5;
     offlinePosition = sessionPosition;
     offlineReviewAttempts = [];
@@ -738,39 +859,60 @@
     }
 
     recording = true;
+    pendingStopRecording = false;
     onsetTs = Date.now() / 1000;
     audioChunks = [];
     $("btn-ptt").classList.add("recording");
     $("btn-ptt").textContent = "Recording…";
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      await ensureMicStream("recording");
     } catch (err) {
-      const name = err && err.name;
-      $("status").textContent =
-        name === "NotAllowedError" ? "Microphone permission denied — allow it in browser settings."
-        : name === "NotFoundError" ? "No microphone found."
-        : (name === "SecurityError" || name === "NotSupportedError") ? "Microphone needs HTTPS. Use Tailscale or open this on the Mac."
-        : `Microphone error: ${name || "unknown"}`;
+      $("status").textContent = micErrorMessage(err);
       recording = false;
+      pendingStopRecording = false;
+      $("btn-ptt").classList.remove("recording");
+      $("btn-ptt").textContent = "Press & hold to answer";
+      return;
+    }
+
+    if (!stream) {
+      recording = false;
+      pendingStopRecording = false;
       $("btn-ptt").classList.remove("recording");
       $("btn-ptt").textContent = "Press & hold to answer";
       return;
     }
 
     startMetering();
-    mediaRecorder = new MediaRecorder(stream);
+    try {
+      mediaRecorder = new MediaRecorder(stream);
+    } catch (err) {
+      stopMetering();
+      logClientEvent("recorder_start_error", { name: err?.name || "unknown", message: String(err?.message || err || ""), stream: micStreamSnapshot(stream) });
+      $("status").textContent = `Recorder error: ${err?.name || "unknown"}`;
+      recording = false;
+      pendingStopRecording = false;
+      $("btn-ptt").classList.remove("recording");
+      $("btn-ptt").textContent = "Press & hold to answer";
+      releaseMicStream("recorder_start_error");
+      return;
+    }
     mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    };
+    mediaRecorder.onerror = (e) => {
+      logClientEvent("recorder_error", {
+        name: e?.error?.name || e?.name || "unknown",
+        message: String(e?.error?.message || e?.message || ""),
+        stream: micStreamSnapshot(stream),
+      });
     };
     mediaRecorder.onstop = async () => {
       const resolutionTs = Date.now() / 1000;
       const clipMs = Math.round((resolutionTs - onsetTs) * 1000);
       const energy = energyMetrics(clipMs);
       stopMetering();
-      try {
-        if (stream) stream.getTracks().forEach((t) => t.stop());
-      } catch {}
       const mime = mediaRecorder.mimeType || "audio/webm";
       const blob = new Blob(audioChunks, { type: mime });
       // Diagnostics: device model + WebView version (UA), actual codec the
@@ -784,6 +926,7 @@
         clip_ms: clipMs,
         chunks: audioChunks.length,
         energy,
+        stream: micStreamSnapshot(stream),
       };
       // Dead-capture guard: when the mic track delivered no signal this
       // session (header-only ~110-byte clip, or recorded near-silence), don't
@@ -792,6 +935,7 @@
       // is never a dead end. (peak_rms<0.01 is ~4x below the quietest real
       // speech we've logged, so it won't false-reject a soft answer.)
       if (isDeadCapture(clientMeta)) {
+        logClientEvent("capture_dead", { client_meta: clientMeta });
         $("status").textContent = "Mic didn't catch that — try again.";
         $("btn-ptt").disabled = false;
         $("btn-skip-voice").disabled = false;
@@ -802,12 +946,28 @@
     // Timeslice: flush an audio chunk every 250ms instead of only at stop, so a
     // momentary encoder stall on Android WebView costs one chunk, not the whole
     // clip (the header-only 110-byte empties).
-    mediaRecorder.start(250);
+    try {
+      mediaRecorder.start(250);
+    } catch (err) {
+      stopMetering();
+      logClientEvent("recorder_start_error", { name: err?.name || "unknown", message: String(err?.message || err || ""), stream: micStreamSnapshot(stream) });
+      $("status").textContent = `Recorder error: ${err?.name || "unknown"}`;
+      recording = false;
+      pendingStopRecording = false;
+      $("btn-ptt").classList.remove("recording");
+      $("btn-ptt").textContent = "Press & hold to answer";
+      releaseMicStream("recorder_start_error");
+      return;
+    }
+    if (pendingStopRecording || !recording) {
+      if (mediaRecorder.state === "recording") mediaRecorder.stop();
+    }
   }
 
   async function stopRecording() {
     if (!recording) return;
     recording = false;
+    pendingStopRecording = true;
     $("btn-ptt").classList.remove("recording");
     $("btn-ptt").textContent = "Press & hold to answer";
     $("btn-ptt").disabled = true;
@@ -1000,6 +1160,7 @@
 
   async function endSession() {
     if (!sessionId) return;
+    releaseMicStream("session_end");
     if (offlineSession) {
       const userId = offlineUserId;
       const r = {
@@ -1011,6 +1172,8 @@
       document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
       $("screen-review").classList.remove("hidden");
       sessionId = null;
+      currentQid = null;
+      currentAttemptId = null;
       resetOfflineSession();
       sessionPosition = 0;
       sessionTargetQuestions = 0;
@@ -1028,6 +1191,8 @@
     document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
     $("screen-review").classList.remove("hidden");
     sessionId = null;
+    currentQid = null;
+    currentAttemptId = null;
     currentSessionPlan = null;
     sessionPosition = 0;
     sessionTargetQuestions = 0;

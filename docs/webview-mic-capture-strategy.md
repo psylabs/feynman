@@ -1,7 +1,8 @@
 # WebView mic capture: intermittent dead-track strategy
 
-**Status:** parked (2026-06-22). Detection + robustness shipped; the structural
-fix below is deferred until the telemetry says it's still needed.
+**Status:** Tier 1 shipped (2026-06-23). Detection + robustness shipped first;
+the app now also keeps one mic stream open for the session instead of
+acquiring/releasing it for every question.
 
 ## Symptom
 
@@ -41,15 +42,31 @@ on-device — so it predates and is independent of the loudness meter).
 These reduce stalled-encoder empties and stop silent clips becoming phantom
 skips. They do **not** revive a fully-dead track mid-session.
 
+## What's now shipped (2026-06-23)
+
+- Tier 1: acquire the mic once at session start, reuse that stream for each
+  per-question `MediaRecorder`, and release only on session end/navigation.
+- Tier 1.5: before recording, reacquire if the stream is missing, inactive,
+  ended, or muted.
+- Client-side capture diagnostics are posted to `/client-log` and therefore land
+  in the normal `logs/YYYY-MM-DD.jsonl` stream and debug pane:
+  `client.mic_acquire_start`, `client.mic_acquired`, `client.mic_released`,
+  `client.mic_track_muted`, `client.mic_track_unmuted`,
+  `client.mic_track_ended`, `client.recorder_error`, and
+  `client.capture_dead`.
+- Uploaded `answer.received` metadata now includes `client_meta.stream` with
+  track state and non-identifying audio settings such as sample rate/channel
+  count/echo-cancellation flags when the WebView exposes them.
+
 ## Strategy ladder (cheapest / highest-leverage first)
 
-1. **Tier 1 — acquire the mic once per session, not per question.** ⭐ Try first.
+1. **Tier 1 — acquire the mic once per session, not per question.** ✅ Shipped.
    Open the stream at session start, keep it alive, `start()`/`stop()` the
    `MediaRecorder` on it per question, release on session end. Removes the
    acquire/release race entirely. Contained change; bonus: lower latency, no
    per-question permission churn. Tradeoff: mic-in-use indicator stays on for the
    session, slightly more battery.
-2. **Tier 1.5 — health check + auto re-acquire.** Before recording, verify
+2. **Tier 1.5 — health check + auto re-acquire.** ✅ Shipped. Before recording, verify
    `track.readyState === "live" && !track.muted`; re-acquire if not. Pairs with
    `isDeadCapture` so a dead stream silently re-opens instead of only warning.
 3. **Tier 2 — native capture plugin** (Capacitor mic/voice-recorder, native
@@ -61,6 +78,14 @@ skips. They do **not** revive a fully-dead track mid-session.
 
 ## Recommended next step
 
-Ship Tier 1, then **let the `energy`/`bytes` telemetry judge it** over a few
-sessions. If the empty/dead rate drops to ~0, stop. If it persists above the ~7%
-baseline, that's the signal it's deeper WebView jank → escalate to Tier 2.
+Field-test with the Moto Razr + Bluetooth headphones. Check:
+
+- `client.capture_dead`: client rejected a dead/near-silent clip before upload.
+- `answer.received.client_meta.stream`: whether Android exposed muted/ended
+  track state or suspicious audio settings.
+- `answer.stt_skip_retry` with healthy `bytes`/`energy`: valid-size audio still
+  reached STT but was unusable.
+
+If `client.capture_dead` or 110-byte uploads drop to ~0, Tier 1 fixed the
+dead-track race. If valid-size Bluetooth clips still repeatedly transcribe as
+`skip`, escalate to Tier 2 native capture.
