@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from server import diagnosis, generator, money, scheduler
 
@@ -149,10 +150,15 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual(diagnosis.fact_display(key), "Money: category difference")
 
     def test_generator_supports_money_arithmetic(self):
-        problem = generator.generate(
-            "money_arithmetic",
-            target={"operation": "category_difference"},
-        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "transactions.csv"
+            path.write_text(CSV)
+            rows = money.load_transactions(path)
+            with patch("server.money.load_transactions", return_value=rows):
+                problem = generator.generate(
+                    "money_arithmetic",
+                    target={"operation": "category_difference"},
+                )
 
         self.assertEqual(problem["parameters"]["operation"], "category_difference")
         self.assertIsInstance(problem["expected"], float)

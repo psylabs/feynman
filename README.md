@@ -88,18 +88,27 @@ The right pane streams every event happening inside the system in real time — 
 `trivial_diff` = "subtraction with `|a - b| <= 2`"). `suppressions.yaml`
 lists which predicates are active per skill. The generator re-samples
 when a candidate problem matches any active predicate, so trivial
-questions like `9567 - 9566` or `7 × 10` are never asked.
+questions like `9567 - 9566` or `7 × 10` are filtered out.
 
 - Adding a new *kind* of rule: write a small function in
   `server/suppressions.py` decorated with `@rule("name")`.
 - Turning a rule on or off: edit `suppressions.yaml`.
-- Pinned target facts (the scheduler asks for a specific fact) bypass
-  suppression — the caller knows what it's doing.
+- Pinned target facts (the scheduler asks for a specific fact) are still
+  checked. If the candidate is suppressed, the target hint is dropped and the
+  generator re-samples freely up to `MAX_RETRIES`.
 
-## Docs site (pdoc)
+## Docs site
 
-Pushes to `main` trigger `.github/workflows/docs.yml`, which runs `pdoc` over
-`server/` and publishes the result to GitHub Pages.
+Pushes to `main` trigger `.github/workflows/docs.yml`, which runs
+`tools/build_docs.py` and publishes the result to GitHub Pages.
+
+The docs build:
+
+- runs pdoc for public server modules with inline source disabled;
+- excludes private finance ingestion internals from pdoc;
+- renders `docs/architecture.md` with Mermaid;
+- generates decision-flow, config, and database-schema reference pages; and
+- fails if the generated site contains sensitive local finance details.
 
 One-time setup: repo Settings → Pages → Source = "GitHub Actions". Until that
 toggle is flipped, the workflow runs successfully but nothing is published.
@@ -107,6 +116,5 @@ toggle is flipped, the workflow runs successfully but nothing is published.
 Build locally:
 
 ```
-pip install -e .[docs]
-pdoc server --output-directory site
+uv run --extra docs python tools/build_docs.py --output-dir site
 ```

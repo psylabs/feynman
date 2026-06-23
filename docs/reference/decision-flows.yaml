@@ -1,0 +1,168 @@
+# Agent note: update this file when scheduler, generator, suppression,
+# diagnosis, or retention decision logic changes. Keep it public-safe:
+# no private finance ingestion setup, account details, local data paths,
+# .env details, data/, or logs/.
+
+flows:
+  - id: scheduler-session-plan
+    title: Scheduler session plan
+    purpose: Explains how build_session_plan chooses a complete drill before playback.
+    sources:
+      - label: server/scheduler.py
+        path: server/scheduler.py
+      - label: server/diagnosis.py
+        path: server/diagnosis.py
+      - label: skills.yaml
+        path: skills.yaml
+    inputs:
+      - Recent attempts for the user, capped at 300.
+      - Skill target latencies from skills.yaml.
+      - Available skill ids currently loaded in storage.
+      - Requested session length.
+    steps:
+      - Compute per-fact stats and drill priorities from recent attempts.
+      - Compute mastered facts eligible for retention.
+      - Reserve grounded slots as length // 2.
+      - Reserve retention slots, 2 for sessions of 12 or more questions and 1 for sessions of 8 to 11.
+      - Fill the remaining slots with foundation themes from the highest-priority facts.
+      - Add one related foundation fact when the foundation block is large enough.
+      - Build grounded slots, then spread repeated facts and adjacent grounded pairs.
+    outputs:
+      - Ordered slot list with skill_id, fact_key, role, target_fact, level, and reason.
+      - scheduler.session_plan event with theme, retention, related, grounded, and foundation counts.
+    notes:
+      - In a 12-question drill, six slots are grounded before retention and foundation are interleaved.
+      - Money receives two dedicated grounded staples first when money_arithmetic is available.
+      - Weather operations fill only the remaining grounded pool, balanced against money by historical attempt count.
+    mermaid: |
+      flowchart TD
+        A[Start build_session_plan] --> B[Read recent attempts]
+        B --> C[Compute fact priorities]
+        C --> D[Reserve grounded slots: length // 2]
+        D --> E[Reserve retention slots]
+        E --> F[Choose foundation themes]
+        F --> G[Add related foundation fact when useful]
+        G --> H[Build grounded slots]
+        H --> I[Spread duplicates and adjacent grounded pairs]
+        I --> J[Emit scheduler.session_plan]
+        J --> K[Return ordered slots]
+
+  - id: grounded-slot-choice
+    title: Grounded slot choice
+    purpose: Explains why weather, wind, and temperature problems may appear less often than expected.
+    sources:
+      - label: server/scheduler.py
+        path: server/scheduler.py
+    inputs:
+      - Grounded skills available in storage.
+      - Existing per-skill attempt counts for the user.
+      - Grounded slot budget from build_session_plan.
+      - Scheduler grounded operation pools.
+    steps:
+      - If no grounded slot budget exists, return no grounded slots.
+      - If money_arithmetic is available, allocate restaurant_tip_15 first.
+      - If money_arithmetic is available and budget remains, allocate split_bill second.
+      - Increment money attempt counts for those dedicated slots.
+      - For every remaining grounded slot, choose the grounded skill with the fewest historical attempts.
+      - Pick a random operation from that skill's operation pool.
+    outputs:
+      - Grounded slot list containing dedicated money staples plus balanced money/weather slots.
+    notes:
+      - Weather has four operation choices in its random pool: temp_delta, daily_range, f_to_c_approx, wind_delta.
+      - In a typical 12-question session, money can consume two of the six grounded slots before weather competes for the remaining four.
+      - This is why wind_delta and temperature operations can show up less frequently even when weather_math is enabled.
+    mermaid: |
+      flowchart TD
+        A[Grounded budget n] --> B{money_arithmetic available?}
+        B -- yes --> C[Add restaurant_tip_15]
+        C --> D{Budget remains?}
+        D -- yes --> E[Add split_bill]
+        B -- no --> F[Skip money staples]
+        D -- no --> I[Return grounded slots]
+        E --> G[Balance remaining slots by attempt count]
+        F --> G
+        G --> H[Randomly pick operation from selected skill pool]
+        H --> I
+
+  - id: generation-and-suppression
+    title: Problem generation and suppression
+    purpose: Explains how a scheduled target becomes a concrete problem and how active suppression rules can replace it.
+    sources:
+      - label: server/generator.py
+        path: server/generator.py
+      - label: server/suppressions.py
+        path: server/suppressions.py
+      - label: suppressions.yaml
+        path: suppressions.yaml
+      - label: skills.yaml
+        path: skills.yaml
+    inputs:
+      - skill_id chosen by scheduler or session plan.
+      - Optional target_fact such as operands, operation, or pattern hints.
+      - Difficulty level or mastery value.
+      - Active rule names from suppressions.yaml.
+    steps:
+      - Dispatch to the per-skill generator for the requested skill_id.
+      - Generate one candidate using target_fact when present.
+      - Compute candidate features inside parameters when the skill supports suppression predicates.
+      - Check active rule names for the skill against server.suppressions.REGISTRY.
+      - If no rule matches, return the candidate.
+      - If a rule matches, drop target_fact and resample freely up to MAX_RETRIES.
+      - Return the first non-suppressed candidate, or the final sampled candidate after retries.
+    outputs:
+      - Problem dict with prompt, expected answer, and parameters.
+      - parameters.features for rules that depend on operand shape.
+    notes:
+      - Active suppressions win over scheduler target hints.
+      - To turn a rule on or off, edit suppressions.yaml.
+      - To add a new rule kind, add a predicate in server/suppressions.py.
+    mermaid: |
+      flowchart TD
+        A[generate skill_id target level] --> B[Call skill generator]
+        B --> C[Candidate problem]
+        C --> D[Load active suppressions]
+        D --> E{Any active rule matches?}
+        E -- no --> F[Return candidate]
+        E -- yes --> G[Drop target_fact]
+        G --> H[Resample freely]
+        H --> I{Retries left and still suppressed?}
+        I -- yes --> H
+        I -- no --> J[Return non-suppressed or final candidate]
+
+  - id: diagnosis-retention
+    title: Diagnosis and retention
+    purpose: Explains how recent attempts become priority facts and retention checks.
+    sources:
+      - label: server/diagnosis.py
+        path: server/diagnosis.py
+      - label: server/session_analysis.py
+        path: server/session_analysis.py
+      - label: server/scheduler.py
+        path: server/scheduler.py
+    inputs:
+      - Attempt history with skill_id, parameters, correctness, latency, and timestamps.
+      - Skill target latencies from skills.yaml.
+      - Recent regression signals from newest attempts.
+    steps:
+      - Convert each attempt into a fact key.
+      - Aggregate attempts by fact key.
+      - Compute accuracy and median latency for each fact.
+      - Score slow or inaccurate facts as drill priorities.
+      - Boost facts that recently regressed.
+      - Separately identify mastered facts that have not appeared recently.
+      - Feed priority and retention pools into the scheduler session plan.
+    outputs:
+      - next_drills and diagnosis summaries for the profile UI.
+      - Foundation themes and retention slots for scheduler.build_session_plan.
+    notes:
+      - Diagnosis reads attempts as source of truth; skill_state is a rollup cache.
+      - Retention checks are deliberately small so they do not crowd out current weak spots.
+    mermaid: |
+      flowchart TD
+        A[Recent attempts] --> B[Fact keys]
+        B --> C[Per-fact stats]
+        C --> D[Accuracy and median latency]
+        D --> E[Drill priority score]
+        D --> F[Mastered retention pool]
+        E --> G[Scheduler themes]
+        F --> H[Scheduler retention slots]

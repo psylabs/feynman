@@ -79,9 +79,7 @@ TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def render(md_path: Path, title: str | None) -> str:
-    md_text = md_path.read_text()
-
+def render_text(md_text: str, title: str | None) -> str:
     # Replace ```mermaid fenced blocks with <pre class="mermaid"> so the
     # client-side Mermaid runtime picks them up. Done before the markdown
     # renderer touches the text so it doesn't try to highlight the source.
@@ -100,8 +98,13 @@ def render(md_path: Path, title: str | None) -> str:
         md_text,
         extensions=["fenced_code", "tables", "toc"],
     )
-    page_title = title or md_path.stem.replace("-", " ").replace("_", " ").title()
+    page_title = title or "Feynman docs"
     return TEMPLATE.format(title=page_title, content=html)
+
+
+def render(md_path: Path, title: str | None) -> str:
+    page_title = title or md_path.stem.replace("-", " ").replace("_", " ").title()
+    return render_text(md_path.read_text(), page_title)
 
 
 def main() -> int:

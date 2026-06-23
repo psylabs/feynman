@@ -11,8 +11,9 @@ of rule names. Adding a new *kind* of rule is a small Python change here;
 turning rules on or off is a YAML edit.
 
 When ``generate()`` is called with a pinned ``target`` (e.g. the
-scheduler asked for a specific fact), suppressions are bypassed — the
-caller deliberately asked for that problem.
+scheduler asked for a specific fact), the first candidate is still checked.
+If it matches an active rule, the generator drops the target hint and
+re-samples freely. Active suppressions win over scheduler hints.
 """
 
 from __future__ import annotations

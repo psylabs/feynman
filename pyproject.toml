@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-docs = ["pdoc>=14"]
+docs = ["pdoc>=14", "markdown>=3.6"]
 
 [tool.setuptools]
-packages = ["server"]
+packages = ["server", "tools"]
