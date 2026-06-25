@@ -1,17 +1,6 @@
 name: android-apk
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    paths:
-      - "android/**"
-      - "web/**"
-      - "scripts/write-build-info.mjs"
-      - "package.json"
-      - "package-lock.json"
-      - "capacitor.config.json"
-      - ".github/workflows/android-apk.yml"
   workflow_dispatch:
 
 permissions:
