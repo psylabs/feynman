@@ -23,7 +23,9 @@ from tools.template_forge import run, _validate, _candidate_id, main
 VALID = {
     "prompt": "You spent $120 at Chipotle. What is 15 percent of that?",
     "skill_id": "money_arithmetic",
-    "operation": "restaurant_tip_15",
+    # category_amount, not restaurant_tip_15: tip/split ops are in
+    # server.money._FORGE_EXCLUDED_OPS (never consumed) and are never forged.
+    "operation": "category_amount",
     "op": "pct_of",
     "args": [15, 120],
     "source": "plaid.latest.json",
@@ -33,7 +35,7 @@ VALID = {
 HALLUCINATED = {
     "prompt": "You had 99 extra charges but spent $120 at lunch. What's 15 percent?",
     "skill_id": "money_arithmetic",
-    "operation": "restaurant_tip_15",
+    "operation": "category_amount",
     "op": "pct_of",
     "args": [15, 120],
     "source": "plaid.latest.json",
@@ -43,7 +45,7 @@ HALLUCINATED = {
 UNKNOWN_OP = {
     "prompt": "You spent $50 at Starbucks. What is 20 percent tip?",
     "skill_id": "money_arithmetic",
-    "operation": "restaurant_tip_15",
+    "operation": "category_amount",
     "op": "multiply",
     "args": [50, 0.20],
     "source": "plaid.latest.json",
@@ -160,7 +162,7 @@ class TestValidate(unittest.TestCase):
         cand = {
             "prompt": "You spent $-15 in credits. What is 10 percent?",
             "skill_id": "money_arithmetic",
-            "operation": "restaurant_tip_15",
+            "operation": "category_amount",
             "op": "pct_of",
             "args": [10, 15],  # 15 without minus sign
             "source": "test",
@@ -177,7 +179,8 @@ class TestValidate(unittest.TestCase):
         cand = {
             "prompt": "You spent $1,250 at X. What is half?",
             "skill_id": "money_arithmetic",
-            "operation": "split_bill",  # div-compatible label (was charge_total)
+            "operation": "split_bill",  # non-consumable, but this test targets
+            # the comma-normalized hallucination check (any-based assertion)
             "op": "div",
             "args": [625, 2],  # 1250 missing (625 is half, but 1250 not in args)
             "source": "test",
@@ -190,13 +193,14 @@ class TestValidate(unittest.TestCase):
         self.assertTrue(any("1250" in r for r in reasons))
 
     def test_comma_formatted_number_accepted(self):
-        """Prompt with $1,250 in args should be accepted (comma normalization)."""
+        """Prompt with $1,250 in args should be accepted (comma normalization).
+        Uses charge_total/add_list — split_bill is no longer forgeable."""
         cand = {
-            "prompt": "You spent $1,250 at X. Split 2 ways — each share?",
+            "prompt": "You spent $1,250 at X and $250 at Y on Monday. What's the total?",
             "skill_id": "money_arithmetic",
-            "operation": "split_bill",  # div-compatible label (was charge_total)
-            "op": "div",
-            "args": [1250, 2],
+            "operation": "charge_total",
+            "op": "add_list",
+            "args": [1250, 250],
             "source": "test",
         }
         reasons = _validate(cand, set())
@@ -284,7 +288,7 @@ class TestValidate(unittest.TestCase):
         cand = {
             "prompt": "You spent $120 at Chipotle. What is 15 percent of that?",
             "skill_id": "money_arithmetic",
-            "operation": "restaurant_tip_15",
+            "operation": "category_amount",
             "op": "pct_of",
             "args": [15, 999],   # 999 is not in the prompt
             "source": "test",
@@ -378,9 +382,9 @@ class TestValidate(unittest.TestCase):
         """pct_of(15, base) is accepted when 15 is a friendly pct (chosen
         constant, not required in context) and the base IS in context."""
         cand = {
-            "prompt": "You spent $120 at Chipotle on Friday. What's a 15% tip?",
+            "prompt": "You spent $120 on dining on Friday. What's 15% of that?",
             "skill_id": "money_arithmetic",
-            "operation": "restaurant_tip_15",
+            "operation": "category_amount",
             "op": "pct_of",
             "args": [15, 120],
             "source": "test",
@@ -393,9 +397,9 @@ class TestValidate(unittest.TestCase):
         """The percent (15) is exempt, but the base still must be grounded —
         a base not present in context is rejected via the base arg."""
         cand = {
-            "prompt": "You spent $999 at Chipotle on Friday. What's a 15% tip?",
+            "prompt": "You spent $999 on dining on Friday. What's 15% of that?",
             "skill_id": "money_arithmetic",
-            "operation": "restaurant_tip_15",
+            "operation": "category_amount",
             "op": "pct_of",
             "args": [15, 999],
             "source": "test",
@@ -409,8 +413,12 @@ class TestValidate(unittest.TestCase):
         self.assertNotIn("15.0", context_reasons[0])
 
     def test_div_small_divisor_exempt_dividend_in_context_accepted(self):
-        """div(amount, 4) is accepted when 4 is a small party-size divisor
-        (chosen constant, not required in context) and the amount IS."""
+        """div(amount, 4) passes the CONTEXT check when 4 is a small
+        party-size divisor (chosen constant, not required in context) and the
+        amount IS in context.  split_bill itself is now rejected as
+        op_not_consumable (never consumed per server.money), so this test
+        pins the carve-out behavior specifically: op_not_consumable must be
+        the ONLY rejection reason."""
         cand = {
             "prompt": "You spent $80 at PRO. Split 4 ways — each share?",
             "skill_id": "money_arithmetic",
@@ -421,7 +429,10 @@ class TestValidate(unittest.TestCase):
         }
         context_numbers = {"money_arithmetic": {80.0, 36.0}, "weather_math": set()}
         reasons = _validate(cand, set(), context_numbers)
-        self.assertEqual(reasons, [], f"Expected no rejection, got: {reasons}")
+        self.assertEqual(
+            reasons, ["op_not_consumable:split_bill"],
+            f"Expected only op_not_consumable (divisor carve-out must pass), got: {reasons}",
+        )
 
     def test_div_small_divisor_dividend_not_in_context_rejected(self):
         """The divisor (4) is exempt, but the dividend still must be
@@ -521,6 +532,55 @@ class TestValidate(unittest.TestCase):
             "_OP_COMPAT keys must exactly match ALL_GROUNDED_OPS",
         )
 
+    # -----------------------------------------------------------------------
+    # op_not_consumable (task-6.1 refine-5): server.money._FORGE_EXCLUDED_OPS
+    # entries are never consumed from the pool, so forging them is dead weight
+    # -----------------------------------------------------------------------
+
+    def test_non_consumable_operation_rejected(self):
+        """A restaurant_tip_15 candidate must be rejected op_not_consumable —
+        server/money.py never consumes pool entries for excluded ops
+        (live-Plaid protection), so accepting one creates permanent dead
+        weight.  Models the live-run finding: a clean 15%-tip entry that
+        would sit unused forever."""
+        cand = {
+            "prompt": "You spent $120 at Chipotle on Friday. What's a 15% tip?",
+            "skill_id": "money_arithmetic",
+            "operation": "restaurant_tip_15",
+            "op": "pct_of",
+            "args": [15, 120],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertEqual(
+            reasons, ["op_not_consumable:restaurant_tip_15"],
+            f"Expected exactly op_not_consumable, got: {reasons}",
+        )
+
+    def test_consumable_pct_operation_accepted(self):
+        """The equivalent percent problem labeled category_amount (consumable)
+        passes with zero rejection reasons."""
+        cand = {
+            "prompt": "You spent $120 on dining this week. What's 25% of that?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_amount",
+            "op": "pct_of",
+            "args": [25, 120],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertEqual(reasons, [], f"Expected no rejection, got: {reasons}")
+
+    def test_excluded_ops_come_from_server_money(self):
+        """The forge must use server.money._FORGE_EXCLUDED_OPS directly —
+        single source of truth, no drift."""
+        from server.money import _FORGE_EXCLUDED_OPS
+
+        self.assertIs(forge._FORGE_EXCLUDED_OPS, _FORGE_EXCLUDED_OPS)
+        # And the excluded ops must be real grounded operations, otherwise
+        # the exclusion is dead code.
+        self.assertTrue(_FORGE_EXCLUDED_OPS <= forge.ALL_GROUNDED_OPS)
+
     def test_ugly_answer_zero_rejected(self):
         """delta with equal args (result = 0) must be rejected as ugly_answer."""
         cand = {
@@ -556,12 +616,28 @@ class TestSystemPrompt(unittest.TestCase):
                 f"compute op {op_name!r} missing from system prompt",
             )
 
-    def test_prompt_enumerates_all_grounded_operations(self):
-        """Every grounded operation label must appear in the prompt."""
-        for operation in forge.ALL_GROUNDED_OPS:
+    def test_prompt_enumerates_all_consumable_operations(self):
+        """Every CONSUMABLE grounded operation label must appear in the
+        prompt.  Ops in server.money._FORGE_EXCLUDED_OPS are never consumed
+        from the pool, so they are deliberately not offered to the LLM."""
+        for operation in forge.ALL_GROUNDED_OPS - forge._FORGE_EXCLUDED_OPS:
             self.assertIn(
                 operation, forge._SYSTEM_PROMPT,
-                f"grounded operation {operation!r} missing from system prompt",
+                f"consumable operation {operation!r} missing from system prompt",
+            )
+
+    def test_prompt_enumeration_omits_non_consumable_ops(self):
+        """The "operation" allowed-values enumeration must NOT offer excluded
+        ops.  (They may still appear elsewhere in the prompt, e.g. in the
+        LABELING warning and BAD examples, which steer AWAY from them.)"""
+        prompt_text = forge._SYSTEM_PROMPT
+        enum_start = prompt_text.index('"operation" = which app problem type')
+        enum_end = prompt_text.index("Never put a compute name")
+        enum_block = prompt_text[enum_start:enum_end]
+        for operation in forge._FORGE_EXCLUDED_OPS:
+            self.assertNotIn(
+                operation, enum_block,
+                f"excluded op {operation!r} must not be offered in the enumeration",
             )
 
     def test_prompt_has_fewshot_with_both_fields(self):
@@ -585,6 +661,10 @@ class TestSystemPrompt(unittest.TestCase):
             self.assertIn(
                 m.group("operation"), forge.ALL_GROUNDED_OPS,
                 f"few-shot operation {m.group('operation')!r} is not a grounded label",
+            )
+            self.assertNotIn(
+                m.group("operation"), forge._FORGE_EXCLUDED_OPS,
+                f"few-shot operation {m.group('operation')!r} is not consumable",
             )
             self.assertIn(
                 m.group("op"), OPS,

@@ -28,7 +28,12 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
 from server.forge_ops import OPS
-from server.money import _swag, load_recent_plaid_transactions, load_transactions
+from server.money import (
+    _FORGE_EXCLUDED_OPS,
+    _swag,
+    load_recent_plaid_transactions,
+    load_transactions,
+)
 from server.weather import load_forecast, load_locations
 
 # ---------------------------------------------------------------------------
@@ -125,8 +130,7 @@ Each candidate object MUST have these fields:
   "delta"    : (a, b) → abs(a - b)
 
 "operation" = which app problem type this is — the ONLY allowed "operation" values:
-  for skill_id money_arithmetic : restaurant_tip_15 | split_bill | charge_total | \
-category_difference | category_amount
+  for skill_id money_arithmetic : charge_total | category_difference | category_amount
   for skill_id weather_math     : temp_delta | daily_range | f_to_c_approx | wind_delta
 
 Never put a compute name ("sub", "add_list", "pct_of", "div", "delta") in the
@@ -134,8 +138,8 @@ Never put a compute name ("sub", "add_list", "pct_of", "div", "delta") in the
 "op" field takes ONLY the five compute names.
 
 LABELING: operation=charge_total for any "what's the total" over multiple
-purchases; operation=split_bill ONLY for dividing one bill among N people
-(op=div).
+purchases. Do NOT emit restaurant_tip_15 or split_bill — those problem types
+are generated elsewhere and will be rejected here.
 
 HARD RULES (the validator enforces every one — violating any causes rejection):
 1. prompt ≤ 90 chars, ends with "?", no filler phrases ("If you...", "What is the total...").
@@ -156,17 +160,17 @@ start money prompts with "You spent" or a day reference where natural; never lis
 bare "LABEL $N, LABEL $N" pairs like a receipt.
 
 DIVERSITY: aim for a mix of operations across the batch — include at least one
-percentage problem (restaurant_tip_15 or category_amount, op=pct_of with a friendly
-percent from {5,10,15,20,25,30,40,50,75}) and at most 3 of any one operation.
+percentage problem (category_amount, op=pct_of with a friendly percent from
+{5,10,15,20,25,30,40,50,75}) and at most 3 of any one operation.
 
 GOOD EXAMPLES (complete candidate JSON — short, direct, readable aloud in ~4 seconds;
 note how "operation" is a grounded label while "op" is a compute name):
 ✓ {"prompt": "You spent $36 at Amazon and $22 at PRO on Tuesday. What's the difference?",
    "skill_id": "money_arithmetic", "operation": "category_difference", "op": "delta",
    "args": [36, 22], "source": "plaid.latest.json"}
-✓ {"prompt": "You spent $120 at Chipotle on Friday. What's a 15% tip?",
-   "skill_id": "money_arithmetic", "operation": "restaurant_tip_15", "op": "pct_of",
-   "args": [15, 120], "source": "plaid.latest.json"}
+✓ {"prompt": "You spent $120 on dining this week. What's 25% of that?",
+   "skill_id": "money_arithmetic", "operation": "category_amount", "op": "pct_of",
+   "args": [25, 120], "source": "plaid.latest.json"}
 ✓ {"prompt": "You spent $12 at MTA, $36 at Amazon and $22 at PRO on Monday. What's the total?",
    "skill_id": "money_arithmetic", "operation": "charge_total", "op": "add_list",
    "args": [12, 36, 22], "source": "plaid.latest.json"}
@@ -182,8 +186,8 @@ BAD EXAMPLES (rejected — do not imitate):
 listing; not natural second-person phrasing (say "You spent $36 at Amazon and $22 at PRO..." instead)
 ✗ {"operation": "delta", "op": "delta", ...} — "delta" is a compute name; the "operation" \
 field must be a grounded label like category_difference or daily_range
-✗ {"operation": "split_bill", "op": "add_list", ...} — a multi-purchase total is \
-charge_total; split_bill is ONLY for dividing one bill among people (op=div)
+✗ {"operation": "split_bill", "op": "add_list", ...} — split_bill and restaurant_tip_15 \
+are never forged (generated elsewhere); a multi-purchase total is charge_total
 """
 
 
@@ -357,6 +361,13 @@ def _validate(
     #      pollute scheduling.  See _OP_COMPAT for the table.
     elif op not in _OP_COMPAT.get(operation, frozenset()):
         reasons.append(f"op_operation_mismatch:{operation}/{op}")
+
+    # 10c. operation must be consumable: server/money.py excludes some ops
+    #      from pool consumption (_FORGE_EXCLUDED_OPS, live-Plaid protection,
+    #      Task 6.2), so forging entries for them creates permanent dead
+    #      weight in the pool.  Independent of the mismatch check above.
+    if operation in _FORGE_EXCLUDED_OPS:
+        reasons.append(f"op_not_consumable:{operation}")
 
     # 11. prompt ≤ 100 chars, ends with ?
     if len(prompt) > _PROMPT_MAX_CHARS:
