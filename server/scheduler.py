@@ -51,8 +51,23 @@ def pick_drill(
         regression_keys=reg_keys,
     )
 
+    # Honor feedback-driven exclusions/cooldowns the same way build_session_plan
+    # does. pick_drill feeds the offline seed pack, so without this the offline
+    # path silently ignores "bad problem" exclusions and "seen too often"
+    # cooldowns. Priority fact keys share the mul:LOxHI / pct:N / money:op form
+    # with taxonomy keys, so _family_blocked matches them directly.
+    excluded = _optional_key_set(storage, "excluded_keys", user_id)
+    cooldown = _optional_key_set(storage, "active_cooldowns", user_id, time.time())
+    blocked = excluded | cooldown
+    if blocked:
+        priorities = [
+            p for p in priorities
+            if not _family_blocked(p["fact_key"], blocked)
+        ]
+
     if not priorities:
-        # Cold start or very few attempts: fall back to skill-level selection
+        # Cold start, very few attempts, or everything blocked: fall back to
+        # skill-level selection.
         return _cold_start_pick(storage, user_id, emit)
 
     # Weighted sample from top priorities (not just the single worst fact)

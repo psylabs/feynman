@@ -314,6 +314,19 @@ class ExclusionStubTests(unittest.TestCase):
         due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
         self.assertNotIn("mul:6x7", due_keys)
 
+    def test_pick_drill_never_pins_an_excluded_fact(self):
+        # pick_drill feeds the offline seed pack; excluded facts must not leak.
+        # 6x7 is drilled wrong+slow so it dominates drill_priorities; excluding
+        # it must keep it out of every pinned pick across many samples.
+        attempts = _mul_compound_attempts(n=8, a=6, b=7, correct=0, latency=8000)
+        storage = FakeStorageWithExclusions(attempts=attempts, excluded={"mul:6x7"})
+        for _ in range(200):
+            pick = scheduler.pick_drill(storage, "u", _noop)
+            tf = pick.get("target_fact") or {}
+            if tf.get("a") is not None:
+                lo, hi = sorted((int(tf["a"]), int(tf["b"])))
+                self.assertNotEqual(f"mul:{lo}x{hi}", "mul:6x7")
+
 
 def _make_minimal_slot(skill_id, fact_key, family, tier, role="weak"):
     """Build the minimal slot dict that apply_skins inspects."""
