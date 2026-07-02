@@ -1507,7 +1507,10 @@
       const row = chip.closest(".fb-row");
       if (!row || !row.dataset.sessionId) return;
       const code = chip.dataset.code;
-      row.querySelectorAll(".fb-chip").forEach((c) => c.classList.toggle("selected", c === chip));
+      row.querySelectorAll(".fb-chip").forEach((c) => {
+        c.disabled = true;
+        c.classList.toggle("selected", c === chip);
+      });
       const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
       postFeedback(row, {
         session_id: row.dataset.sessionId,
