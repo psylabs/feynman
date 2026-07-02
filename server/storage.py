@@ -100,6 +100,25 @@ class Storage:
             if "answer_mode" not in attempt_cols:
                 conn.execute("ALTER TABLE attempts ADD COLUMN answer_mode TEXT")
 
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS item_state (
+                  user_id TEXT NOT NULL,
+                  item_key TEXT NOT NULL,
+                  tier TEXT NOT NULL,
+                  family TEXT NOT NULL,
+                  card_json TEXT NOT NULL,
+                  due_at REAL NOT NULL,
+                  reps INTEGER NOT NULL DEFAULT 0,
+                  lapses INTEGER NOT NULL DEFAULT 0,
+                  last_rating INTEGER,
+                  updated_at REAL NOT NULL,
+                  PRIMARY KEY (user_id, item_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_item_state_due ON item_state(user_id, due_at);
+                """
+            )
+
     # ---- users -------------------------------------------------------------
 
     def list_users(self) -> list[dict]:
@@ -606,6 +625,65 @@ class Storage:
             "streak_current": streak,
             "streak_total": total_days,
         }
+
+    # ---- item state (SRS) -------------------------------------------------
+
+    def upsert_item_state(
+        self,
+        user_id: str,
+        item_key: str,
+        tier: str,
+        family: str,
+        card_json: str,
+        due_at: float,
+        rating: int,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO item_state
+                    (user_id, item_key, tier, family, card_json, due_at,
+                     reps, lapses, last_rating, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1,
+                        CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+                        ?, ?)
+                ON CONFLICT(user_id, item_key) DO UPDATE SET
+                    tier       = excluded.tier,
+                    family     = excluded.family,
+                    card_json  = excluded.card_json,
+                    due_at     = excluded.due_at,
+                    reps       = item_state.reps + 1,
+                    lapses     = item_state.lapses + CASE WHEN excluded.last_rating = 1 THEN 1 ELSE 0 END,
+                    last_rating = excluded.last_rating,
+                    updated_at  = excluded.updated_at
+                """,
+                (
+                    user_id, item_key, tier, family, card_json, due_at,
+                    rating,  # for lapses CASE in INSERT
+                    rating,  # last_rating in INSERT
+                    time.time(),
+                ),
+            )
+
+    def get_item_state(self, user_id: str, item_key: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM item_state WHERE user_id = ? AND item_key = ?",
+                (user_id, item_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def due_items(self, user_id: str, now: float, limit: int = 50) -> list[dict]:
+        """Items with due_at <= now, ordered most overdue first (due_at ASC)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM item_state WHERE user_id = ? AND due_at <= ? "
+                "ORDER BY due_at ASC LIMIT ?",
+                (user_id, now, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- leaderboard -------------------------------------------------------
 
     def leaderboard_data(self) -> list[dict]:
         """Cross-user comparison. Per-user totals plus per-skill mastery."""

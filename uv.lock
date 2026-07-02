@@ -94,6 +94,7 @@ version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "fsrs" },
     { name = "openai" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
@@ -115,6 +116,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.110" },
+    { name = "fsrs", specifier = ">=5.0" },
     { name = "markdown", marker = "extra == 'docs'", specifier = ">=3.6" },
     { name = "openai", specifier = ">=1.40" },
     { name = "pdoc", marker = "extra == 'docs'", specifier = ">=14" },
@@ -127,6 +129,18 @@ provides-extras = ["docs"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
+name = "fsrs"
+version = "6.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d7/00/337de60fd5497ea4fed046192d17fa79809ca2aad7326da2e464d9d8950b/fsrs-6.3.1.tar.gz", hash = "sha256:43c5c6056b97266baf6ebfef9e4cadeb9ac5a4e1b29ffdfb300f445b6e6b15ca", size = 32645, upload-time = "2026-03-10T14:01:03.734Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/3c/e7e140f8cdb95b042cb125ee142e7630187e8e78d21847ca81e9d1e99bb8/fsrs-6.3.1-py3-none-any.whl", hash = "sha256:ac1bf9939573592d8c9bc1e11a00bd17e04146dc9f2c913127e2bcc431b9040b", size = 22840, upload-time = "2026-03-10T14:01:01.084Z" },
+]
 
 [[package]]
 name = "h11"
