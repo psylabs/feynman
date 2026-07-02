@@ -10,7 +10,9 @@ Two session modes:
     levels so we get a real baseline. Bypasses the scheduler.
 """
 
+import logging
 import uuid
+from datetime import datetime, timezone
 
 from server import (
     diagnosis,
@@ -22,11 +24,15 @@ from server import (
     parser,
     scheduler,
     session_analysis,
+    srs,
     stt,
+    taxonomy,
     tts,
 )
 from server.events import EventBus
 from server.storage import Storage
+
+_log = logging.getLogger(__name__)
 
 DRILL_LENGTH = 12
 DRILL_LENGTH_MIN = 3
@@ -69,6 +75,71 @@ class Orchestrator:
         self._active: dict[str, dict] = {}
         # Per-session metadata: target length and pre-computed slot plan.
         self._sessions: dict[str, dict] = {}
+
+    # ---- SRS hook ----------------------------------------------------------
+
+    def _record_srs(
+        self,
+        user_id: str,
+        skill_id: str,
+        parameters: dict,
+        correct: bool,
+        onset_ms: int | None,
+        resolution_ms: int | None,
+        target_ms: int,
+        item_key_override: str | None = None,
+    ) -> None:
+        """Grade one attempt into item_state via FSRS.
+
+        Classifies the attempt, picks the right latency by tier (onset for
+        primitives, resolution for compounds), rates it, and upserts the card.
+        Silently returns when classify() returns None or on any error.
+        Skipped attempts must not reach this method — callers are responsible.
+        """
+        try:
+            taxon = taxonomy.classify(skill_id, parameters)
+            if taxon is None:
+                return
+
+            if taxon.tier == "primitive":
+                latency = onset_ms
+                item_target_ms = taxonomy.PRIMITIVE_ONSET_TARGET_MS
+            else:
+                latency = resolution_ms
+                item_target_ms = target_ms
+
+            rating = srs.rate(correct, latency, item_target_ms)
+            now = datetime.now(timezone.utc)
+
+            existing = self.storage.get_item_state(user_id, taxon.key)
+            card_json = existing["card_json"] if existing else None
+            new_card_json, due_at = srs.review(card_json, rating, now)
+
+            self.storage.upsert_item_state(
+                user_id, taxon.key, taxon.tier, taxon.family,
+                new_card_json, due_at, int(rating),
+            )
+
+            if item_key_override is not None:
+                override_existing = self.storage.get_item_state(user_id, item_key_override)
+                override_card_json = override_existing["card_json"] if override_existing else None
+                override_new_card_json, override_due_at = srs.review(
+                    override_card_json, rating, now,
+                )
+                override_family = (
+                    item_key_override.rsplit(":", 1)[0]
+                    if ":" in item_key_override
+                    else item_key_override
+                )
+                self.storage.upsert_item_state(
+                    user_id, item_key_override, "compound", override_family,
+                    override_new_card_json, override_due_at, int(rating),
+                )
+        except Exception:
+            _log.warning(
+                "SRS hook failed for user=%s skill=%s", user_id, skill_id,
+                exc_info=True,
+            )
 
     # ---- session lifecycle -------------------------------------------------
 
@@ -504,6 +575,18 @@ class Orchestrator:
             q["skill_id"],
             skill["target_latency_ms"],
             self.bus.emit,
+        )
+
+        # Grade into FSRS item_state (skipped attempts are handled above via
+        # audio_failed returns, so every attempt reaching here is a real grade).
+        self._record_srs(
+            user_id=q["user_id"],
+            skill_id=q["skill_id"],
+            parameters=q["parameters"],
+            correct=verdict["correct"],
+            onset_ms=onset_lat,
+            resolution_ms=resolution_lat,
+            target_ms=skill["target_latency_ms"],
         )
 
         # Mid-drill coaching is intentionally disabled for now. The feedback
