@@ -9,6 +9,12 @@ Design decisions:
 - attempt_id=None → no-op (no item to classify).
 - classify() returning None → no-op (unrecognised skill or missing parameters).
 - too_hard → store only (no state change needed; weak_families already drills it).
+- Double-apply across the online and offline paths is prevented client-side:
+  web/app.js postFeedback() routes an event to EITHER /feedback (online
+  sessions) OR the sync outbox (offline: session ids / failed POSTs that never
+  reached this code).  The residual window — a POST processed server-side whose
+  response was lost, then retried via outbox — can at worst re-grade Easy once;
+  cooldown and exclusion writes are idempotent.
 """
 
 import logging
