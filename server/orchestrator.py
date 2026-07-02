@@ -88,6 +88,7 @@ class Orchestrator:
         resolution_ms: int | None,
         target_ms: int,
         item_key_override: str | None = None,
+        when: datetime | None = None,
     ) -> None:
         """Grade one attempt into item_state via FSRS.
 
@@ -95,6 +96,10 @@ class Orchestrator:
         primitives, resolution for compounds), rates it, and upserts the card.
         Silently returns when classify() returns None or on any error.
         Skipped attempts must not reach this method — callers are responsible.
+
+        ``when`` is the review timestamp fed to FSRS (defaults to now). The
+        offline bulk-sync path passes each attempt's own ``created_at`` so
+        historical sessions schedule from when they actually happened.
         """
         try:
             taxon = taxonomy.classify(skill_id, parameters)
@@ -109,7 +114,7 @@ class Orchestrator:
                 item_target_ms = target_ms
 
             rating = srs.rate(correct, latency, item_target_ms)
-            now = datetime.now(timezone.utc)
+            now = when or datetime.now(timezone.utc)
 
             existing = self.storage.get_item_state(user_id, taxon.key)
             card_json = existing["card_json"] if existing else None
@@ -629,6 +634,11 @@ class Orchestrator:
         Each attempt carries a numeric ``parsed_answer`` (typed/parsed
         on-device) or ``skipped``; audio-only offline answers are out of scope.
         All attempts in a batch are grouped under one synthetic drill session.
+
+        Non-skipped attempts are also graded into FSRS using the attempt's own
+        ``created_at`` timestamp (not now), so offline sessions advance the
+        schedule from when they actually happened. Skeleton ``covers`` credit is
+        online-only — the sync payload carries no covers field.
         """
         sid = self.storage.create_session(user_id, "drill")
         recorded = []
@@ -675,6 +685,27 @@ class Orchestrator:
                 "rule": verdict["rule"],
             })
             skills_touched[skill_id] = skill["target_latency_ms"]
+
+            # Grade into FSRS at the attempt's own review time (created_at).
+            # Skipped attempts must not reach _record_srs. Failures are contained
+            # inside _record_srs, so a bad card never breaks the sync.
+            if not skipped:
+                created_at = _to_float(a.get("created_at"))
+                when = (
+                    datetime.fromtimestamp(created_at, tz=timezone.utc)
+                    if created_at is not None
+                    else None
+                )
+                self._record_srs(
+                    user_id=user_id,
+                    skill_id=skill_id,
+                    parameters=a.get("parameters") or {},
+                    correct=verdict["correct"],
+                    onset_ms=_to_float(a.get("onset_latency_ms")),
+                    resolution_ms=_to_float(a.get("resolution_latency_ms")),
+                    target_ms=skill["target_latency_ms"],
+                    when=when,
+                )
 
         for skill_id, target_ms in skills_touched.items():
             mastery.update(self.storage, user_id, skill_id, target_ms, self.bus.emit)

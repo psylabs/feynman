@@ -1,6 +1,9 @@
+import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
+from server import srs
 from server.orchestrator import Orchestrator
 
 
@@ -13,6 +16,7 @@ class FakeStorage:
     def __init__(self):
         self.inserted = []
         self.sessions_ended = []
+        self._item_states = {}
 
     def create_session(self, user_id, mode="drill"):
         return "sess-1"
@@ -28,6 +32,24 @@ class FakeStorage:
 
     def end_session(self, sid):
         self.sessions_ended.append(sid)
+
+    # ---- item_state (FSRS) -------------------------------------------------
+    def get_item_state(self, user_id, item_key):
+        return self._item_states.get((user_id, item_key))
+
+    def upsert_item_state(self, user_id, item_key, tier, family, card_json, due_at, rating):
+        existing = self._item_states.get((user_id, item_key))
+        reps = (existing["reps"] + 1) if existing else 1
+        self._item_states[(user_id, item_key)] = {
+            "user_id": user_id,
+            "item_key": item_key,
+            "tier": tier,
+            "family": family,
+            "card_json": card_json,
+            "due_at": due_at,
+            "reps": reps,
+            "last_rating": rating,
+        }
 
 
 class BulkAttemptsTest(unittest.TestCase):
@@ -92,6 +114,66 @@ class BulkAttemptsTest(unittest.TestCase):
         self.orch.submit_answer(sid, "q1", "/tmp/answer.wav", 10.0, 10.2, 11.5)
 
         self.assertEqual(self.storage.inserted[0]["answer_mode"], "voice")
+
+
+class BulkFsrsGradingTest(unittest.TestCase):
+    """Fix 2: offline bulk-synced attempts must grade into FSRS using each
+    attempt's own created_at, not 'now'."""
+
+    def setUp(self):
+        self.storage = FakeStorage()
+        self.orch = Orchestrator(self.storage, FakeBus())
+
+    @patch("server.mastery.update")
+    def test_correct_synced_attempt_creates_item_state_reps_1(self, _m):
+        # mul:7x8 primitive; correct, fast onset -> Rating.Good.
+        past = time.time() - 30 * 86400  # 30 days ago
+        self.orch.record_bulk_attempts("user-1", [{
+            "skill_id": "multiplication",
+            "expected_answer": 56,
+            "parsed_answer": 56,
+            "parameters": {"a": 7, "b": 8},
+            "onset_latency_ms": 800,
+            "resolution_latency_ms": 900,
+            "created_at": past,
+        }])
+        row = self.storage.get_item_state("user-1", "mul:7x8")
+        self.assertIsNotNone(row, "correct synced attempt should create an item_state")
+        self.assertEqual(row["reps"], 1)
+
+    @patch("server.mastery.update")
+    def test_due_at_derived_from_historical_created_at(self, _m):
+        # A review graded at a past created_at is due earlier than the same
+        # review graded 'now' (same interval, earlier anchor).
+        past = time.time() - 30 * 86400
+        self.orch.record_bulk_attempts("user-1", [{
+            "skill_id": "multiplication",
+            "expected_answer": 56,
+            "parsed_answer": 56,
+            "parameters": {"a": 7, "b": 8},
+            "onset_latency_ms": 800,
+            "resolution_latency_ms": 900,
+            "created_at": past,
+        }])
+        row = self.storage.get_item_state("user-1", "mul:7x8")
+
+        # Equivalent review graded now: onset 800 <= 1200 target -> Good.
+        _, now_due = srs.review(None, srs.rate(True, 800, 1200), datetime.now(timezone.utc))
+        self.assertLess(
+            row["due_at"], now_due,
+            "historical created_at should yield an earlier due_at than a now-grade",
+        )
+
+    @patch("server.mastery.update")
+    def test_skipped_synced_attempt_creates_no_item_state(self, _m):
+        self.orch.record_bulk_attempts("user-1", [{
+            "skill_id": "multiplication",
+            "expected_answer": 56,
+            "parameters": {"a": 7, "b": 8},
+            "skipped": True,
+            "created_at": time.time() - 86400,
+        }])
+        self.assertIsNone(self.storage.get_item_state("user-1", "mul:7x8"))
 
 
 if __name__ == "__main__":
