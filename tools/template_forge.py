@@ -61,6 +61,7 @@ _FRIENDLY_PCTS: frozenset[int] = frozenset({5, 10, 15, 20, 25, 30, 40, 50, 75})
 _MAX_ADDENDS: int = 4
 _MAX_EXPECTED: float = 100_000.0
 _PROMPT_MAX_CHARS: int = 100
+_MAX_PER_OP_BATCH: int = 3
 
 # ---------------------------------------------------------------------------
 # OpenAI client (lazy singleton, same pattern as server/stt.py)
@@ -120,15 +121,21 @@ HARD RULES (the validator enforces every one — violating any causes rejection)
 10. weather_math prompts must NOT contain "$". money_arithmetic must NOT contain "°" or "mph".
 11. Vary sentence structure — do not repeat the same framing across candidates.
 
+STYLE: write in the app's natural second-person voice, with recency/day texture —
+start money prompts with "You spent" or a day reference where natural; never list
+bare "LABEL $N, LABEL $N" pairs like a receipt.
+
 GOOD EXAMPLES (short, direct, readable aloud in ~4 seconds):
-✓ "Amazon $36, PRO $22. What's the difference?" [money, delta, args=[36,22]]
-✓ "Chipotle $120. What's a 15% tip?" [money, pct_of, args=[15,120]]
-✓ "High 89, low 72. What's the range?" [weather, delta, args=[89,72]]
+✓ "You spent $36 at Amazon and $22 at PRO on Tuesday. What's the difference?" [money, delta, args=[36,22]]
+✓ "You spent $120 at Chipotle on Friday. What's a 15% tip?" [money, pct_of, args=[15,120]]
+✓ "Today's high is 89, low 75. What's the range?" [weather, delta, args=[89,75]]
 
 BAD EXAMPLES (rejected — do not imitate):
 ✗ "What is the total amount spent on transportation yesterday?" — no numbers, unanswerable
 ✗ "If you divide the $36 spent on Amazon by the $14 for entertainment, what do you get?" \
 — 36÷14 is not an integer, and the prompt is too verbose
+✗ "Amazon $36, PRO $22. What's the difference?" — receipt-style bare "LABEL $N, LABEL $N" \
+listing; not natural second-person phrasing (say "You spent $36 at Amazon and $22 at PRO..." instead)
 """
 
 
@@ -304,10 +311,28 @@ def _validate(
 
     # 13. Context grounding: args must be a subset of context numbers for this skill
     #     (None = skip, used by tests that don't inject context)
+    #
+    #     Carve-outs: two op args are chosen constants, not context-derived
+    #     amounts, so they are exempt from the context-membership check —
+    #     every OTHER arg for these ops must still come from context:
+    #       - pct_of arg[0] (the percent) when it's a friendly percent
+    #         (5/10/15/20/25/30/40/50/75); the base (arg[1]) still must be
+    #         grounded.
+    #       - div arg[1] (the divisor) when it's a small party-size integer
+    #         2..12; the dividend (arg[0]) still must be grounded.
     if context_numbers is not None:
         skill_ctx = context_numbers.get(skill_id, set())
         if skill_ctx:  # only enforce when context has numbers (non-empty)
-            args_floats = {float(a) for a in args}
+            exempt_indices: set[int] = set()
+            if op == "pct_of" and args:
+                pct_val = float(args[0])
+                if pct_val in _FRIENDLY_PCTS:
+                    exempt_indices.add(0)
+            elif op == "div" and len(args) > 1:
+                divisor = float(args[1])
+                if divisor.is_integer() and 2 <= int(divisor) <= 12:
+                    exempt_indices.add(1)
+            args_floats = {float(a) for i, a in enumerate(args) if i not in exempt_indices}
             if not args_floats.issubset(skill_ctx):
                 missing = args_floats - skill_ctx
                 reasons.append(f"args_not_in_context:{sorted(missing)}")
@@ -385,17 +410,25 @@ def run(
     rejected: dict[str, list[str]] = {}
     # Track prompts accepted in this batch to catch within-batch duplicates
     batch_prompts: set[str] = set()
+    # Track accepted counts per operation to enforce the per-batch quota
+    op_counts: dict[str, int] = {}
 
     for cand in raw_candidates:
         prompt = cand.get("prompt", "")
+        operation = cand.get("operation", "")
         combined_existing = existing_prompts | batch_prompts
         reasons = _validate(cand, combined_existing, context_numbers)
+        # Per-operation batch cap: at most _MAX_PER_OP_BATCH accepted per
+        # `operation` in a single run, so no one op dominates the batch.
+        if not reasons and op_counts.get(operation, 0) >= _MAX_PER_OP_BATCH:
+            reasons = [f"op_quota:{operation}"]
         if reasons:
             rejected[prompt or repr(cand)] = reasons
         else:
             entry = _make_entry(cand)
             accepted.append(entry)
             batch_prompts.add(prompt.casefold())
+            op_counts[operation] = op_counts.get(operation, 0) + 1
 
     return accepted, rejected
 

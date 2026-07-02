@@ -369,6 +369,78 @@ class TestValidate(unittest.TestCase):
             f"Expected too_many_addends, got: {reasons}",
         )
 
+    # -----------------------------------------------------------------------
+    # pct_of / div context carve-outs (task-6.1 refine-2, reviewer Important)
+    # -----------------------------------------------------------------------
+
+    def test_pct_of_friendly_percent_exempt_base_in_context_accepted(self):
+        """pct_of(15, base) is accepted when 15 is a friendly pct (chosen
+        constant, not required in context) and the base IS in context."""
+        cand = {
+            "prompt": "You spent $120 at Chipotle on Friday. What's a 15% tip?",
+            "skill_id": "money_arithmetic",
+            "operation": "restaurant_tip_15",
+            "op": "pct_of",
+            "args": [15, 120],
+            "source": "test",
+        }
+        context_numbers = {"money_arithmetic": {120.0, 36.0}, "weather_math": set()}
+        reasons = _validate(cand, set(), context_numbers)
+        self.assertEqual(reasons, [], f"Expected no rejection, got: {reasons}")
+
+    def test_pct_of_friendly_percent_base_not_in_context_rejected(self):
+        """The percent (15) is exempt, but the base still must be grounded —
+        a base not present in context is rejected via the base arg."""
+        cand = {
+            "prompt": "You spent $999 at Chipotle on Friday. What's a 15% tip?",
+            "skill_id": "money_arithmetic",
+            "operation": "restaurant_tip_15",
+            "op": "pct_of",
+            "args": [15, 999],
+            "source": "test",
+        }
+        context_numbers = {"money_arithmetic": {120.0, 36.0}, "weather_math": set()}
+        reasons = _validate(cand, set(), context_numbers)
+        context_reasons = [r for r in reasons if "args_not_in_context" in r]
+        self.assertTrue(context_reasons, f"Expected args_not_in_context, got: {reasons}")
+        # Only the base (999) should be flagged, not the exempt percent (15)
+        self.assertIn("999", context_reasons[0])
+        self.assertNotIn("15.0", context_reasons[0])
+
+    def test_div_small_divisor_exempt_dividend_in_context_accepted(self):
+        """div(amount, 4) is accepted when 4 is a small party-size divisor
+        (chosen constant, not required in context) and the amount IS."""
+        cand = {
+            "prompt": "You spent $80 at PRO. Split 4 ways — each share?",
+            "skill_id": "money_arithmetic",
+            "operation": "split_bill",
+            "op": "div",
+            "args": [80, 4],
+            "source": "test",
+        }
+        context_numbers = {"money_arithmetic": {80.0, 36.0}, "weather_math": set()}
+        reasons = _validate(cand, set(), context_numbers)
+        self.assertEqual(reasons, [], f"Expected no rejection, got: {reasons}")
+
+    def test_div_small_divisor_dividend_not_in_context_rejected(self):
+        """The divisor (4) is exempt, but the dividend still must be
+        grounded — a dividend not present in context is rejected."""
+        cand = {
+            "prompt": "You spent $1,000 at PRO. Split 4 ways — each share?",
+            "skill_id": "money_arithmetic",
+            "operation": "split_bill",
+            "op": "div",
+            "args": [1000, 4],  # 1000 not in context; 4 is exempt divisor
+            "source": "test",
+        }
+        context_numbers = {"money_arithmetic": {80.0, 36.0}, "weather_math": set()}
+        reasons = _validate(cand, set(), context_numbers)
+        self.assertTrue(
+            any("args_not_in_context" in r for r in reasons),
+            f"Expected args_not_in_context, got: {reasons}",
+        )
+        self.assertTrue(any("1000" in r for r in reasons))
+
     def test_ugly_answer_zero_rejected(self):
         """delta with equal args (result = 0) must be rejected as ugly_answer."""
         cand = {
@@ -486,6 +558,39 @@ class TestRun(unittest.TestCase):
                 accepted, rejected = run(n=1, pool_path=pool_path)
 
         self.assertEqual(len(accepted), 1, f"Expected 1 accepted, got: {rejected}")
+
+    def test_op_quota_caps_at_three_per_operation(self):
+        """5 valid same-operation candidates → 3 accepted, 2 rejected
+        with an op_quota reason (task-6.1 refine-2, §3)."""
+        import tempfile
+
+        same_op_candidates = [
+            {
+                "prompt": f"You spent ${amt} at Amazon and $22 at PRO on Tuesday. "
+                          f"What's the difference?",
+                "skill_id": "money_arithmetic",
+                "operation": "category_difference",
+                "op": "delta",
+                "args": [amt, 22],
+                "source": "test",
+            }
+            for amt in (36, 40, 44, 48, 52)
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            pool_path = Path(td) / "pool.json"
+
+            with patch("tools.template_forge._call_llm", return_value=same_op_candidates), \
+                 patch("tools.template_forge._build_context", return_value=_FAKE_CONTEXT):
+                accepted, rejected = run(n=5, pool_path=pool_path)
+
+        self.assertEqual(len(accepted), 3, f"Expected 3 accepted, got {len(accepted)}: {accepted}")
+        self.assertEqual(len(rejected), 2, f"Expected 2 rejected, got {len(rejected)}: {rejected}")
+        for reasons in rejected.values():
+            self.assertTrue(
+                any(r == "op_quota:category_difference" for r in reasons),
+                f"Expected op_quota reason, got: {reasons}",
+            )
 
     def test_run_context_numbers_injected_rejects_out_of_context(self):
         """run() with injected context_numbers rejects args not in context."""
