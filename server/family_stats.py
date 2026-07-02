@@ -45,21 +45,6 @@ _PREFIX_TO_SKILL: dict[str, str] = {
     "pct": "percent_of",
 }
 
-# Primitive family patterns (all others are compound)
-_PRIMITIVE_EXACT = frozenset(
-    {"add.within20", "add.bridge10", "sub.within20", "sub.borrow20"}
-)
-
-
-def _family_tier(family: str) -> str:
-    """Return 'primitive' or 'compound' inferred from the family string."""
-    if family in _PRIMITIVE_EXACT:
-        return "primitive"
-    if family.startswith("mul.x") or family.startswith("div.x"):
-        return "primitive"
-    return "compound"
-
-
 def _parse_params(a: dict) -> dict:
     """Return parameters as a dict, parsing JSON strings if needed.
 
@@ -220,10 +205,9 @@ def family_level(attempts: list[dict], family: str) -> int:
     Level is read from parameters["level"]. Attempts for other families or without
     a parseable level are ignored.
     """
-    tier = _family_tier(family)
-    target: Optional[int] = PRIMITIVE_ONSET_TARGET_MS if tier == "primitive" else None
-
-    # Collect attempts for this family, sorted oldest-first
+    # Collect attempts for this family, sorted oldest-first.
+    # Derive tier authoritatively from classify() on the first matched attempt.
+    tier: Optional[str] = None
     family_atts: list[tuple[dict, Optional[int]]] = []
     for a in attempts:
         if a.get("skipped"):
@@ -232,8 +216,16 @@ def family_level(attempts: list[dict], family: str) -> int:
         taxon = classify(a.get("skill_id", ""), params)
         if taxon is None or taxon.family != family:
             continue
+        if tier is None:
+            tier = taxon.tier
         lv = params.get("level")
         family_atts.append((a, lv))
+
+    # No classifiable attempts → return 1 (empty-input default, unchanged)
+    if tier is None:
+        return 1
+
+    target: Optional[int] = PRIMITIVE_ONSET_TARGET_MS if tier == "primitive" else None
 
     family_atts.sort(key=lambda x: x[0].get("created_at", 0))
 

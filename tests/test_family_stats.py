@@ -368,3 +368,16 @@ def test_family_level_l1_fail_blocks_l2_advance():
     atts += _make_attempts("subtraction", _SUB_PARAMS, 10,
                            correct=True, resolution_ms=1500, level=2, start_ts=10.0)
     assert family_level(atts, "sub.3d-2d.bt") == 1
+
+
+def test_family_level_primitive_sub_within20_no_advance_if_slow():
+    """sub.within20 is primitive per classify(); slow onset must block advance.
+
+    This verifies that tier is derived from classify(), not a hardcoded table.
+    If the tier were incorrectly treated as compound, the latency check would be
+    skipped and the 10 correct attempts would cause a false advancement to L2.
+    """
+    # a=18, b=4 → sub.within20 (primitive); onset 1500ms > PRIMITIVE_ONSET_TARGET_MS 1200ms
+    atts = _make_attempts("subtraction", {"a": 18, "b": 4}, 10,
+                          correct=True, onset_ms=1500, level=1)
+    assert family_level(atts, "sub.within20") == 1
