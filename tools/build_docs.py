@@ -154,21 +154,25 @@ def generate_config_reference(root: Path) -> str:
         "",
         "## Scheduler Constants",
         "",
-        "Foundation skills: "
-        + ", ".join(sorted(scheduler.FOUNDATION_SKILLS)),
+        f"Grounded skills: {', '.join(sorted(scheduler.GROUNDED_SKILL_IDS))}",
         "",
-        "Grounded skills: " + ", ".join(sorted(scheduler.GROUNDED_SKILLS)),
+        f"Healthy grounded share: {scheduler.HEALTHY_GROUNDED_SHARE}",
         "",
-        "Grounded operation pools:",
+        f"Recent-key exclusion window: {scheduler.RECENT_KEY_WINDOW} attempts",
+        "",
+        "Grounded skins (skeleton family prefix maps to grounded ops):",
         "",
     ])
-    for skill_id, ops in sorted(scheduler._GROUNDED_OPS.items()):
-        label = scheduler._GROUNDED_PREFIX.get(skill_id, skill_id)
-        out.append(f"- {label}: {', '.join(ops)}")
+    for prefix, ops in scheduler.SKINS.items():
+        rendered = ", ".join(f"{sid}:{op}" for sid, op in ops)
+        out.append(f"- {prefix}: {rendered}")
 
     out.extend([
         "",
-        "For a 12-question drill, `build_session_plan` reserves 6 grounded slots. Money gets two dedicated staples first, then remaining grounded slots are balanced by historical attempt counts across money and weather.",
+        "`build_session_plan` selects due reviews first, then one bootstrap slot "
+        "while foundations are untested, then weak-family drills. Eligible slots "
+        f"are skinned into grounded ops until ~{int(scheduler.HEALTHY_GROUNDED_SHARE * 100)}% "
+        "of the session is grounded practice.",
     ])
     return "\n".join(out) + "\n"
 

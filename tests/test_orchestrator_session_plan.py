@@ -113,6 +113,39 @@ class OrchestratorSessionPlanTests(unittest.TestCase):
         self.assertEqual(ended["session_analysis"]["fluency_gaps"][0]["fact_key"], "mul:9x12")
         self.assertEqual(ended["session_analysis"]["fluency_gaps"][0]["target_ms"], 5000)
 
+    def test_skinned_slot_covers_reaches_record_srs(self):
+        """A plan slot carrying `covers` must flow into `_record_srs` as
+        `item_key_override` so the skeleton item is credited too."""
+        orch = Orchestrator(FakeStorage(), FakeBus())
+        orch._sessions["session-1"] = {"target": 2}
+        orch._active["session-1"] = {
+            "qid": "q-1",
+            "user_id": "user-1",
+            "mode": "drill",
+            "skill_id": "money_arithmetic",
+            "prompt": "How much is the tip?",
+            "expected": 4.0,
+            "parameters": {"operation": "restaurant_tip_15"},
+            "audio_duration_ms": 1000,
+            "position": 1,
+            "covers": "pct:15",
+        }
+        captured = {}
+
+        def _fake_record_srs(*args, **kwargs):
+            captured["override"] = kwargs.get("item_key_override")
+
+        with (
+            patch("server.stt.transcribe", return_value={"text": "four"}),
+            patch("server.parser.parse", return_value={"value": 4.0, "skipped": False}),
+            patch("server.grader.grade", return_value={"correct": True, "error_magnitude": 0.0, "rule": "exact"}),
+            patch("server.mastery.update"),
+            patch.object(orch, "_record_srs", side_effect=_fake_record_srs),
+        ):
+            orch.submit_answer("session-1", "q-1", "answer.webm", 1.0, 2.0, 3.0)
+
+        self.assertEqual(captured["override"], "pct:15")
+
     def test_submit_does_not_request_mid_drill_feedback(self):
         orch = Orchestrator(FakeStorage(), FakeBus())
         orch._sessions["session-1"] = {"target": 2}

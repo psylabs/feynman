@@ -294,6 +294,7 @@ class Orchestrator:
         target = meta.get("target") or (
             eval_plan.EVAL_LENGTH if mode == "eval" else DRILL_LENGTH
         )
+        covers = None  # skeleton item_key a skinned plan slot also credits
 
         if mode == "eval":
             skill_id, level = eval_plan.step(position)
@@ -312,12 +313,17 @@ class Orchestrator:
                     "scheduler.plan_pick",
                     fact_key=pick.get("fact_key"),
                     role=pick.get("role"),
+                    covers=pick.get("covers"),
                     remaining=len(plan),
                 )
             else:
                 pick = scheduler.pick_drill(self.storage, user_id, self.bus.emit)
             skill_id = pick["skill_id"]
             level = pick["level"]
+            # A skinned grounded slot credits the underlying skeleton item too.
+            covers = pick.get("covers")
+            if covers is not None and not isinstance(covers, str):
+                covers = None
             problem = generator.generate(
                 skill_id,
                 level=level,
@@ -346,6 +352,7 @@ class Orchestrator:
             "parameters": problem["parameters"],
             "audio_duration_ms": audio["duration_ms"],
             "position": position,
+            "covers": covers,
         }
         payload = {
             "qid": qid,
@@ -587,6 +594,7 @@ class Orchestrator:
             onset_ms=onset_lat,
             resolution_ms=resolution_lat,
             target_ms=skill["target_latency_ms"],
+            item_key_override=q.get("covers"),
         )
 
         # Mid-drill coaching is intentionally disabled for now. The feedback

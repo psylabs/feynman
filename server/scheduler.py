@@ -15,13 +15,13 @@ Lower-level fluency influences priority weighting (soft prerequisite), but
 nothing is hard-locked.
 """
 
+import json
 import math
 import random
-import statistics
 import time
 from typing import Callable
 
-from server import diagnosis, money
+from server import diagnosis, family_stats, taxonomy
 
 
 def pick_drill(
@@ -89,8 +89,50 @@ def pick_drill(
     }
 
 
-FOUNDATION_SKILLS = {"addition", "subtraction", "multiplication", "division"}
-GROUNDED_SKILLS = {"money_arithmetic", "weather_math"}
+# ---------------------------------------------------------------------------
+# Taxonomy-driven session planning (Task 3.2)
+#
+# Selection order: due reviews first, then one bootstrap slot while primitive
+# foundations are still untested, then weak-family drills, then a cold-start
+# fallback for brand-new users. Eligible non-grounded slots are then "skinned"
+# into grounded money/weather ops until the session holds a healthy share of
+# grounded practice.
+# ---------------------------------------------------------------------------
+
+HEALTHY_GROUNDED_SHARE = 0.35   # "healthy amount", not a quota (user decision 2026-07-01)
+RECENT_KEY_WINDOW = 15          # last N attempt keys excluded unless overdue > 1 day
+BOOTSTRAP_ROLE = "bootstrap"
+
+GROUNDED_SKILL_IDS = {"money_arithmetic", "weather_math"}
+
+# Skin map: family-prefix -> grounded ops that exercise the same skeleton skill.
+SKINS = {
+    "sub.2d": [("weather_math", "temp_delta"), ("weather_math", "daily_range")],
+    "sub.3d": [("money_arithmetic", "category_difference")],
+    "add.2d": [("money_arithmetic", "charge_total")],
+    "add.3d": [("money_arithmetic", "charge_total")],
+    "pct":    [("money_arithmetic", "restaurant_tip_15"), ("money_arithmetic", "category_amount")],
+    "div":    [("money_arithmetic", "split_bill")],
+}
+
+# Primitive foundations we guarantee at least one look at per session until the
+# user has ≥5 attempts in each. Ordered so bootstrap rotation prefers the
+# earliest-listed among equally-untested families (see _pick_bootstrap_family).
+BOOTSTRAP_FAMILIES = (
+    [f"mul.x{n}" for n in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20)]
+    + [f"div.x{n}" for n in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20)]
+    + ["add.bridge10", "sub.borrow20"]
+)
+
+_PREFIX_TO_SKILL = {
+    "add": "addition",
+    "sub": "subtraction",
+    "mul": "multiplication",
+    "div": "division",
+    "money": "money_arithmetic",
+    "weather": "weather_math",
+    "pct": "percent_of",
+}
 
 
 def build_session_plan(
@@ -99,360 +141,341 @@ def build_session_plan(
     length: int,
     emit: Callable,
 ) -> list[dict]:
-    """Pre-compute a coherent session with the foundation/grounded split.
+    """Compute a due-first, need-driven session plan.
 
-    Allocation: ~50% grounded (money + weather), the rest foundation theme
-    facts plus retention. Foundation themes are picked from `drill_priorities`
-    filtered to foundation skills.
+    Returns a list of slot dicts in playback order. Same shape as the historic
+    plan slots (``skill_id``, ``target_fact``, ``level``, ``fact_key``,
+    ``display``, ``role``, ``reason``, ``target_ms``, ``diagnosis_*``) plus two
+    new optional keys: ``family`` (taxonomy family the slot drills) and
+    ``covers`` (skeleton item_key a skinned grounded slot also credits).
 
-    Returns a list of slot dicts in playback order (same shape as `pick_drill`
-    plus `fact_key` and `role`). Empty list = cold start; caller should fall
-    back to live `pick_drill` per question.
+    Cold-start users (no due items, no weak families, everything untested) get a
+    bootstrap slot plus cold-start fills; the orchestrator still falls back to
+    live ``pick_drill`` if the plan runs short.
     """
-    attempts = storage.all_attempts_for_user(user_id, limit=300)
-    fact_stats = diagnosis.compute_fact_stats(attempts)
-    skill_targets = {}
-    available_skills = set(storage.all_skill_ids())
-    for sid in available_skills:
-        skill = storage.get_skill(sid)
-        if skill:
-            skill_targets[sid] = skill["target_latency_ms"]
+    now = time.time()
+    attempts = storage.all_attempts_for_user(user_id, limit=500)
 
-    reg_keys = {r["fact_key"] for r in diagnosis.recent_regressions(attempts)}
-    priorities = diagnosis.drill_priorities(
-        fact_stats, skill_targets, min_attempts=2, limit=20,
-        regression_keys=reg_keys,
-    )
+    skill_targets: dict[str, int] = {}
+    for sid in storage.all_skill_ids():
+        sk = storage.get_skill(sid)
+        if sk:
+            skill_targets[sid] = sk["target_latency_ms"]
 
-    retention_pool = diagnosis.mastered_for_retention(fact_stats, skill_targets)
-    grounded_n = length // 2
-    retention_target = 2 if length >= 12 else (1 if length >= 8 else 0)
-    retention_n = min(retention_target, len(retention_pool))
-    foundation_n = max(1, length - grounded_n - retention_n)
+    recent = _recent_item_keys(attempts)
+    # Task 4.2 will add these storage methods; until then they resolve to set().
+    cooldown = _optional_key_set(storage, "active_cooldowns", user_id, now)
+    excluded = _optional_key_set(storage, "excluded_keys", user_id)
+    blocked_unless_overdue = recent | cooldown
 
-    foundation_priorities = [p for p in priorities if p["skill_id"] in FOUNDATION_SKILLS]
-    if not foundation_priorities and not priorities:
-        # Cold start. Live pick_drill handles per-question fallback; we still
-        # seed grounded slots if any grounded skills exist so the user gets
-        # the 50/50 mix from day one.
-        grounded_slots = _build_grounded_slots(storage, user_id, available_skills, grounded_n, skill_targets)
-        if not grounded_slots:
-            emit("scheduler.session_plan", themes=[], slots=[], note="cold start")
-            return []
-        emit(
-            "scheduler.session_plan",
-            length=length,
-            themes=[],
-            grounded_count=len(grounded_slots),
-            note="cold start; grounded-only seed",
-            slots=[{"fact": s["fact_key"], "role": s["role"]} for s in grounded_slots],
-        )
-        return _spread_duplicates_with_alternation(grounded_slots)
+    slots: list[dict] = []
+    seen_keys: set[str] = set()
 
-    requested_themes = max(1, min(3, foundation_n // 2 or 1))
-    theme_pool = foundation_priorities or priorities
-    themes = _select_diverse_themes(theme_pool, requested_themes)
-    num_themes = len(themes) or 1
-
-    related_target = 1 if foundation_n >= 5 else 0
-    related_slots: list[dict] = []
-    for i in range(related_target):
-        theme = themes[i % num_themes]
-        rel_key = _pick_related(theme["fact_key"])
-        if not rel_key:
+    # 1. Due reviews, most overdue first. Items >1 day overdue bypass the
+    #    recency/cooldown exclusion; excluded_keys always wins.
+    for item in storage.due_items(user_id, now, limit=length * 2):
+        if len(slots) >= length:
+            break
+        key = item["item_key"]
+        if key in excluded or key in seen_keys:
             continue
-        rel_skill = _skill_from_key(rel_key) or theme["skill_id"]
-        related_slots.append(_slot_from_key(
-            rel_key, rel_skill, "related",
-            target_ms=skill_targets.get(rel_skill),
-            reason=f"related to {theme['display']}",
+        overdue_days = (now - item.get("due_at", now)) / 86400
+        if key in blocked_unless_overdue and overdue_days < 1:
+            continue
+        slots.append(_slot_for_item(item, attempts, skill_targets))
+        seen_keys.add(key)
+
+    stats = family_stats.family_stats(attempts)
+
+    # 2. One bootstrap slot per session while any foundation family is untested.
+    if len(slots) < length:
+        fam = _pick_bootstrap_family(stats)
+        if fam is not None:
+            slots.append(_bootstrap_slot(fam, attempts, skill_targets))
+
+    # 3. Weak-family drills fill the rest (weak_families order, round-robin).
+    weak = [
+        f for f in family_stats.weak_families(stats, skill_targets, limit=10)
+        if f not in excluded
+    ]
+    if weak:
+        i = 0
+        while len(slots) < length and i <= length * 4:
+            slots.append(_weak_family_slot(weak[i % len(weak)], attempts, skill_targets))
+            i += 1
+
+    # 4. Cold-start fallback for brand-new users: fill any remaining slots.
+    while len(slots) < length:
+        pick = _cold_start_pick(storage, user_id, emit)
+        slots.append(_make_slot(
+            pick["skill_id"], pick["skill_id"], "exploration",
+            pick.get("target_fact"), pick["level"],
+            reason=pick.get("reason", "cold start"),
         ))
 
-    theme_total = max(0, foundation_n - len(related_slots))
-    base_reps = theme_total // num_themes
-    extra = theme_total % num_themes
-
-    foundation_slots: list[dict] = []
-    for i, t in enumerate(themes):
-        reps = base_reps + (1 if i < extra else 0)
-        for _ in range(reps):
-            foundation_slots.append(_slot_from_key(
-                t["fact_key"], t["skill_id"], "theme",
-                display=t["display"],
-                reason=f"slow: {t['display']} ({t['median_latency_ms']}ms, target {t['target_ms']}ms)",
-                target_ms=t["target_ms"],
-                diagnosis_median_latency_ms=t["median_latency_ms"],
-                diagnosis_accuracy=t["accuracy"],
-                diagnosis_n=t["n"],
-                diagnosis_gap_ratio=t["gap_ratio"],
-            ))
-    foundation_slots.extend(related_slots)
-
-    grounded_slots = _build_grounded_slots(storage, user_id, available_skills, grounded_n, skill_targets)
-
-    retention_slots: list[dict] = []
-    for i in range(retention_n):
-        m = retention_pool[i]
-        retention_slots.append(_slot_from_key(
-            m["fact_key"], m["skill_id"], "retention",
-            display=m["display"],
-            target_ms=m.get("target_ms"),
-            diagnosis_median_latency_ms=m.get("median_latency_ms"),
-            diagnosis_accuracy=m.get("accuracy"),
-            diagnosis_n=m.get("n"),
-            reason=f"retention check: {m['display']} (last seen {m['days_since_seen']}d ago)",
-        ))
-
-    slots = foundation_slots + grounded_slots + retention_slots
-    slots = _spread_duplicates_with_alternation(slots)
+    apply_skins(slots, length)
+    plan = _spread_duplicates_with_alternation(slots)
 
     emit(
         "scheduler.session_plan",
         length=length,
-        themes=[
-            {"fact": t["fact_key"], "display": t["display"],
-             "priority": t["priority"], "regressed": t.get("regressed", False)}
-            for t in themes
-        ],
-        retention_count=len(retention_slots),
-        related_count=len(related_slots),
-        grounded_count=len(grounded_slots),
-        foundation_count=len(foundation_slots),
-        slots=[{"fact": s["fact_key"], "role": s["role"]} for s in slots],
+        due_count=sum(1 for s in slots if s["role"].startswith("due")),
+        bootstrap_count=sum(1 for s in slots if s["role"].startswith(BOOTSTRAP_ROLE)),
+        weak_count=sum(1 for s in slots if s["role"].startswith("weak")),
+        grounded_count=sum(1 for s in slots if s["skill_id"] in GROUNDED_SKILL_IDS),
+        slots=[{"fact": s["fact_key"], "role": s["role"]} for s in plan],
     )
-    return slots
+    return plan
 
 
-def _select_diverse_themes(priorities: list[dict], n: int) -> list[dict]:
-    """Pick up to n themes, preferring one-per-skill before doubling up.
-
-    Without this, a session whose top priorities are all `add:*` will be all
-    addition. We walk the priority list twice: first pass picks at most one
-    per skill (greedy by priority); second pass fills remaining slots from
-    the leftovers.
-    """
-    chosen: list[dict] = []
-    seen_skills: set[str] = set()
-    leftovers: list[dict] = []
-    for p in priorities:
-        if len(chosen) >= n:
+def apply_skins(slots: list[dict], length: int) -> list[dict]:
+    """Render eligible slots through grounded generators until the session holds
+    ceil(length * HEALTHY_GROUNDED_SHARE) grounded slots (or eligibility runs
+    out). A skinned slot keeps ``covers=<original item_key>`` so grading credits
+    both the grounded op and the underlying skeleton item. Already-grounded slots
+    are never re-skinned."""
+    target = math.ceil(length * HEALTHY_GROUNDED_SHARE)
+    grounded = sum(1 for s in slots if s["skill_id"] in GROUNDED_SKILL_IDS)
+    for s in slots:
+        if grounded >= target:
             break
-        sid = p.get("skill_id")
-        if sid in seen_skills:
-            leftovers.append(p)
+        if s["skill_id"] in GROUNDED_SKILL_IDS:
             continue
-        chosen.append(p)
-        seen_skills.add(sid)
-    for p in leftovers:
-        if len(chosen) >= n:
-            break
-        chosen.append(p)
-    return chosen
-
-
-_GROUNDED_OPS = {
-    # tip + split_bill are enforced as dedicated slots in _build_grounded_slots,
-    # so the random fill rotation covers the *other* money problems for variety.
-    "money_arithmetic": ("charge_total", "category_difference"),
-    "weather_math": ("temp_delta", "daily_range", "f_to_c_approx", "wind_delta"),
-}
-
-# split-the-bill advances from 3-5 people to 6-8 once the user is fluent at the
-# base set. Mirrors the diagnosis "mastered" bar (accuracy + speed, enough n).
-SPLIT_BILL_BASE_MAX = 5
-SPLIT_BILL_ADVANCED_MAX = 8
-_SPLIT_UNLOCK_MIN_ATTEMPTS = 6
-_SPLIT_UNLOCK_MIN_ACCURACY = 0.9
-
-
-def _split_bill_max_party(storage, user_id: str, skill_targets: dict) -> int:
-    """Return the largest split-the-bill party size the user has unlocked.
-
-    Advanced divisors (6-8) unlock once they've split among 3-5 people enough
-    times, accurately, and at or under the money latency target. Until then it
-    stays capped at SPLIT_BILL_BASE_MAX (5 people)."""
-    attempts = storage.all_attempts_for_user(user_id, limit=300)
-    base = [
-        a for a in attempts
-        if a.get("skill_id") == "money_arithmetic"
-        and (a.get("parameters") or {}).get("operation") == "split_bill"
-        and (a.get("parameters") or {}).get("people") in (3, 4, 5)
-    ]
-    if len(base) < _SPLIT_UNLOCK_MIN_ATTEMPTS:
-        return SPLIT_BILL_BASE_MAX
-    accuracy = sum(1 for a in base if a.get("correct")) / len(base)
-    if accuracy < _SPLIT_UNLOCK_MIN_ACCURACY:
-        return SPLIT_BILL_BASE_MAX
-    target_ms = skill_targets.get("money_arithmetic")
-    lat = [a["resolution_latency_ms"] for a in base if a.get("resolution_latency_ms")]
-    if target_ms and lat and statistics.median(lat) > target_ms:
-        return SPLIT_BILL_BASE_MAX
-    return SPLIT_BILL_ADVANCED_MAX
-
-
-def _build_grounded_slots(
-    storage,
-    user_id: str,
-    available_skills: set[str],
-    n: int,
-    skill_targets: dict,
-) -> list[dict]:
-    """Return up to `n` grounded slots split between weather and money,
-    weighted toward whichever skill is more under-sampled by the user."""
-    if n <= 0:
-        return []
-    grounded = [s for s in GROUNDED_SKILLS if s in available_skills]
-    if not grounded:
-        return []
-    counts = {sid: storage.skill_attempt_count(user_id, sid) for sid in grounded}
-    slots: list[dict] = []
-    # Enforce two finance staples up front: a 15% tip and a split-the-bill.
-    # Pin distinct merchants so the two never land on the same restaurant.
-    if "money_arithmetic" in grounded:
-        max_party = _split_bill_max_party(storage, user_id, skill_targets)
-        money_target = skill_targets.get("money_arithmetic")
-        charges = money.pick_finance_charges()
-        for fact_key, reason in (
-            ("money:restaurant_tip_15", "grounded: restaurant tip (15%)"),
-            ("money:split_bill", "grounded: split the bill"),
-        ):
-            if len(slots) >= n:
-                break
-            slot = _slot_from_key(
-                fact_key, "money_arithmetic", "grounded",
-                target_ms=money_target, reason=reason,
-            )
-            if isinstance(slot["target_fact"], dict):
-                charge = charges.get(fact_key.split(":", 1)[1])
-                if charge is not None:
-                    slot["target_fact"]["charge"] = charge
-                if fact_key == "money:split_bill":
-                    slot["target_fact"]["max_party"] = max_party
-            slots.append(slot)
-            counts["money_arithmetic"] += 1
-    for _ in range(n - len(slots)):
-        sid = min(counts, key=lambda s: counts[s])
-        op = random.choice(_GROUNDED_OPS.get(sid, ("",)))
-        prefix = _GROUNDED_PREFIX.get(sid, sid)
-        fact_key = f"{prefix}:{op}" if op else sid
-        slots.append(_slot_from_key(
-            fact_key, sid, "grounded",
-            target_ms=skill_targets.get(sid),
-            reason=f"grounded: {sid.replace('_', ' ')}",
-        ))
-        counts[sid] += 1
+        fam = s.get("family") or ""
+        prefix = next((p for p in SKINS if fam.startswith(p)), None)
+        if prefix is None:
+            continue
+        skill_id, op = random.choice(SKINS[prefix])
+        word = "money" if skill_id == "money_arithmetic" else "weather"
+        s.update(
+            skill_id=skill_id,
+            covers=s["fact_key"],
+            fact_key=f"{word}:{op}",
+            target_fact={"operation": op},
+            role=s["role"] + "+skin",
+            display=f"{word}: {op.replace('_', ' ')}",
+            target_ms=None,
+        )
+        grounded += 1
     return slots
 
 
-_GROUNDED_PREFIX = {
-    "money_arithmetic": "money",
-    "weather_math": "weather",
-}
+# ---- slot construction -----------------------------------------------------
 
 
-def _slot_from_key(
-    fact_key: str,
+def _make_slot(
     skill_id: str,
+    fact_key: str,
     role: str,
+    target_fact: dict | None,
+    level: int,
+    *,
+    family: str | None = None,
+    covers: str | None = None,
     display: str | None = None,
     reason: str | None = None,
     target_ms: int | None = None,
-    diagnosis_median_latency_ms: int | None = None,
-    diagnosis_accuracy: float | None = None,
-    diagnosis_n: int | None = None,
-    diagnosis_gap_ratio: float | None = None,
 ) -> dict:
+    """Build a plan slot with the full shape the orchestrator/analysis consume."""
+    if display is None:
+        display = taxonomy.family_display(family) if family else fact_key
     return {
         "skill_id": skill_id,
-        "target_fact": _fact_key_to_target(fact_key),
-        "level": _infer_level_from_key(fact_key),
+        "target_fact": target_fact,
+        "level": level,
         "fact_key": fact_key,
-        "display": display or diagnosis.fact_display(fact_key),
+        "display": display,
         "role": role,
-        "reason": reason or f"{role}: {display or fact_key}",
+        "reason": reason or f"{role}: {display}",
         "target_ms": target_ms,
-        "diagnosis_median_latency_ms": diagnosis_median_latency_ms,
-        "diagnosis_accuracy": diagnosis_accuracy,
-        "diagnosis_n": diagnosis_n,
-        "diagnosis_gap_ratio": diagnosis_gap_ratio,
+        "diagnosis_median_latency_ms": None,
+        "diagnosis_accuracy": None,
+        "diagnosis_n": None,
+        "diagnosis_gap_ratio": None,
+        "family": family,
+        "covers": covers,
     }
 
 
-def _skill_from_key(key: str) -> str | None:
-    if key.startswith("mul:"):
-        return "multiplication"
-    if key.startswith("div:"):
-        return "division"
-    if key.startswith("add:"):
-        return "addition"
-    if key.startswith("sub:"):
-        return "subtraction"
-    if key.startswith("pct:"):
-        return "percent_of"
-    if key.startswith("money:"):
-        return "money_arithmetic"
-    if key.startswith("weather:"):
-        return "weather_math"
+def _slot_for_item(item: dict, attempts: list[dict], skill_targets: dict) -> dict:
+    """A due-review slot for one item_state row. Primitive facts pin the exact
+    fact via the generator target; compound families generate at family level."""
+    key = item["item_key"]
+    family = item.get("family") or (key.split(":", 1)[0] if ":" in key else key)
+    skill_id = _skill_for_item_key(key)
+    target_fact = _target_from_item_key(key)
+    level = family_stats.family_level(attempts, family)
+    is_primitive = item.get("tier") == "primitive"
+    target_ms = (
+        taxonomy.PRIMITIVE_ONSET_TARGET_MS if is_primitive
+        else skill_targets.get(skill_id)
+    )
+    return _make_slot(
+        skill_id, key, "due", target_fact, level,
+        family=family, target_ms=target_ms,
+        reason=f"due review: {taxonomy.family_display(family)}",
+    )
+
+
+def _weak_family_slot(family: str, attempts: list[dict], skill_targets: dict) -> dict:
+    """A drill slot for a weak family. Generated at the family's evidence-based
+    level; no exact target (family-level variety)."""
+    skill_id = _skill_for_item_key(family)
+    level = family_stats.family_level(attempts, family)
+    target_ms = (
+        taxonomy.PRIMITIVE_ONSET_TARGET_MS if _is_primitive_family(family)
+        else skill_targets.get(skill_id)
+    )
+    return _make_slot(
+        skill_id, family, "weak", None, level,
+        family=family, target_ms=target_ms,
+        reason=f"needs work: {taxonomy.family_display(family)}",
+    )
+
+
+def _bootstrap_slot(family: str, attempts: list[dict], skill_targets: dict) -> dict:
+    """A first-look slot for an untested foundation family."""
+    skill_id, fact_key, target_fact = _bootstrap_fact(family)
+    level = family_stats.family_level(attempts, family)
+    return _make_slot(
+        skill_id, fact_key, BOOTSTRAP_ROLE, target_fact, level,
+        family=family, target_ms=taxonomy.PRIMITIVE_ONSET_TARGET_MS,
+        reason=f"first look: {taxonomy.family_display(family)}",
+    )
+
+
+def _bootstrap_fact(family: str) -> tuple[str, str, dict | None]:
+    """Pick a concrete primitive fact representing a bootstrap family."""
+    if family.startswith("mul.x"):
+        n = int(family.removeprefix("mul.x"))
+        b = random.randint(2, 12)
+        lo, hi = sorted((n, b))
+        return "multiplication", f"mul:{lo}x{hi}", {"a": n, "b": b}
+    if family.startswith("div.x"):
+        n = int(family.removeprefix("div.x"))
+        b = random.randint(2, 12)
+        lo, hi = sorted((n, b))
+        return "division", f"div:{lo}x{hi}", {"a": n * b, "b": n}
+    if family == "add.bridge10":
+        a = random.randint(4, 9)
+        b = random.randint(11 - a, min(9, 20 - a))
+        lo, hi = sorted((a, b))
+        return "addition", f"add:{lo}+{hi}", {"a": a, "b": b}
+    if family == "sub.borrow20":
+        a = random.choice([12, 13, 14, 15, 16, 17])
+        b = random.randint(a % 10 + 1, 9)
+        return "subtraction", f"sub:{a}-{b}", {"a": a, "b": b}
+    # Unknown family: generate freely within the skill.
+    return _skill_for_item_key(family), family, None
+
+
+# ---- key/target translation ------------------------------------------------
+
+
+def _skill_for_item_key(key: str) -> str:
+    """Map an item_key / family to its originating skill_id."""
+    prefix = key.split(":", 1)[0].split(".", 1)[0]
+    return _PREFIX_TO_SKILL.get(prefix, prefix)
+
+
+def _target_from_item_key(key: str) -> dict | None:
+    """Translate a taxonomy item_key into generator target params.
+
+    Primitive fact keys pin an exact problem:
+        mul:6x7  -> {"a": 6, "b": 7}
+        add:5+8  -> {"a": 5, "b": 8}
+        sub:18-4 -> {"a": 18, "b": 4}
+        div:7x8  -> {"a": 56, "b": 7}   (56 / 7 = 8; divisor/quotient form)
+        pct:15   -> {"percentage": 15}
+        money:split_bill -> {"operation": "split_bill"}
+    Compound family keys (which use '.' separators, e.g. 'sub.3d-2d.bt') return
+    None so the generator samples freely within the family.
+    """
+    if ":" not in key:
+        return None
+    prefix, rest = key.split(":", 1)
+    try:
+        if prefix == "mul":
+            a, b = (int(x) for x in rest.split("x"))
+            return {"a": a, "b": b}
+        if prefix == "div":
+            lo, hi = (int(x) for x in rest.split("x"))
+            return {"a": lo * hi, "b": lo}
+        if prefix == "add":
+            a, b = (int(x) for x in rest.split("+"))
+            return {"a": a, "b": b}
+        if prefix == "sub":
+            a, b = (int(x) for x in rest.split("-"))
+            return {"a": a, "b": b}
+        if prefix == "pct":
+            return {"percentage": int(rest)}
+    except ValueError:
+        return None
+    if prefix in ("money", "weather"):
+        return {"operation": rest}
     return None
 
 
-def _pick_related(key: str) -> str | None:
-    """Return one related fact key in the same family, or None."""
-    cands = _related_keys(key)
-    return random.choice(cands) if cands else None
+# ---- helpers ---------------------------------------------------------------
 
 
-def _related_keys(key: str) -> list[str]:
-    if key.startswith("mul:"):
-        try:
-            a, b = (int(x) for x in key[4:].split("x"))
-        except ValueError:
-            return []
-        out: list[str] = []
-        for x, y in [(a, a), (b, b), (a, b + 1), (a, max(2, b - 1)),
-                     (a + 1, b), (max(2, a - 1), b)]:
-            if not (2 <= x <= 12 and 2 <= y <= 12):
-                continue
-            lo, hi = sorted([x, y])
-            k = f"mul:{lo}x{hi}"
-            if k != key and k not in out:
-                out.append(k)
-        return out
-    if key.startswith("div:"):
-        try:
-            a, b = (int(x) for x in key[4:].split("x"))
-        except ValueError:
-            return []
-        out = []
-        for x, y in [(a, a), (b, b), (a, b + 1), (a, max(2, b - 1)),
-                     (a + 1, b), (max(2, a - 1), b)]:
-            if not (2 <= x <= 12 and 2 <= y <= 12):
-                continue
-            lo, hi = sorted([x, y])
-            k = f"div:{lo}x{hi}"
-            if k != key and k not in out:
-                out.append(k)
-        return out
-    if key.startswith("add:") or key.startswith("sub:"):
-        prefix = key[:4]
-        rest = key[4:]
-        try:
-            pattern, tag = rest.rsplit(":", 1)
-        except ValueError:
-            return []
-        # Skip 3d patterns — old data may still surface them but we don't drill there anymore
-        if "3d" in pattern:
-            return []
-        carry_tag = "c" if prefix == "add:" else "b"
-        flipped = "n" if tag in ("c", "b") else carry_tag
-        return [f"{prefix}{pattern}:{flipped}"]
-    if key.startswith("pct:"):
-        try:
-            pct = int(key[4:])
-        except ValueError:
-            return []
-        return [f"pct:{p}" for p in (10, 15, 20, 25, 50, 75) if p != pct]
-    return []
+def _is_primitive_family(family: str) -> bool:
+    return (
+        family.startswith("mul.x") or family.startswith("div.x")
+        or family in ("add.bridge10", "add.within20", "sub.borrow20", "sub.within20")
+    )
+
+
+def _recent_item_keys(attempts: list[dict]) -> set[str]:
+    """Taxonomy keys of the last RECENT_KEY_WINDOW non-skipped attempts.
+    attempts are newest-first (storage.all_attempts_for_user)."""
+    keys: set[str] = set()
+    seen = 0
+    for a in attempts:
+        if seen >= RECENT_KEY_WINDOW:
+            break
+        if a.get("skipped"):
+            continue
+        params = a.get("parameters") or {}
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except (TypeError, ValueError):
+                params = {}
+        seen += 1
+        taxon = taxonomy.classify(a.get("skill_id", ""), params)
+        if taxon is not None:
+            keys.add(taxon.key)
+    return keys
+
+
+def _pick_bootstrap_family(stats: dict[str, dict]) -> str | None:
+    """The least-tested bootstrap family with <5 attempts, or None if all are
+    covered. Ties break toward the earliest-listed family (stable sort)."""
+    untested = [
+        (stats.get(fam, {}).get("n", 0), idx, fam)
+        for idx, fam in enumerate(BOOTSTRAP_FAMILIES)
+        if stats.get(fam, {}).get("n", 0) < 5
+    ]
+    if not untested:
+        return None
+    untested.sort(key=lambda t: (t[0], t[1]))
+    return untested[0][2]
+
+
+def _optional_key_set(storage, method: str, *args) -> set:
+    """Call an optional storage method, returning set() when it's absent.
+
+    Task 4.2 adds ``active_cooldowns``/``excluded_keys``; until then this lets
+    the scheduler run unchanged. Adding the methods later needs no edit here.
+    """
+    fn = getattr(storage, method, None)
+    if fn is None:
+        return set()
+    try:
+        return set(fn(*args))
+    except Exception:  # pragma: no cover - defensive
+        return set()
 
 
 def _spread_duplicates(slots: list[dict]) -> list[dict]:

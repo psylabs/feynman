@@ -22,7 +22,8 @@ class DocsBuildTests(unittest.TestCase):
         self.assertIn("[server/suppressions.py]", md)
         self.assertIn("weather_math", md)
         self.assertIn("trivial_diff", md)
-        self.assertIn("weather: temp_delta, daily_range, f_to_c_approx, wind_delta", md)
+        self.assertIn("Healthy grounded share: 0.35", md)
+        self.assertIn("weather_math:temp_delta", md)
 
     def test_decision_flows_reference_code_and_mermaid(self):
         md = build_docs.generate_decision_flows(Path("docs/reference/decision-flows.yaml"))
