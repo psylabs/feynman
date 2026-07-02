@@ -140,6 +140,66 @@ class TestValidate(unittest.TestCase):
         reasons = _validate(cand, set())
         self.assertTrue(any("compute_error" in r for r in reasons))
 
+    def test_negative_number_accepted(self):
+        """Prompt with negative number -15 in args should be accepted."""
+        cand = {
+            "prompt": "How much colder is -15 than 5?",
+            "skill_id": "weather_math",
+            "operation": "temp_delta",
+            "op": "delta",
+            "args": [-15, 5],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertEqual(reasons, [], f"Expected no rejection for negative number, got: {reasons}")
+
+    def test_negative_number_hallucinated_rejected(self):
+        """Prompt with negative number -15 not in args should be rejected."""
+        cand = {
+            "prompt": "You spent $-15 in credits. What is 10 percent?",
+            "skill_id": "money_arithmetic",
+            "operation": "restaurant_tip_15",
+            "op": "pct_of",
+            "args": [10, 15],  # 15 without minus sign
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("hallucinated_number" in r for r in reasons),
+            f"Expected hallucinated_number reason for -15, got: {reasons}",
+        )
+        self.assertTrue(any("-15" in r for r in reasons))
+
+    def test_comma_formatted_number_hallucinated_rejected(self):
+        """Prompt with $1,250 not in args should be rejected."""
+        cand = {
+            "prompt": "You spent $1,250 at X. What is half?",
+            "skill_id": "money_arithmetic",
+            "operation": "charge_total",
+            "op": "div",
+            "args": [625, 2],  # 1250 missing (625 is half, but 1250 not in args)
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("hallucinated_number" in r for r in reasons),
+            f"Expected hallucinated_number reason for 1250, got: {reasons}",
+        )
+        self.assertTrue(any("1250" in r for r in reasons))
+
+    def test_comma_formatted_number_accepted(self):
+        """Prompt with $1,250 in args should be accepted."""
+        cand = {
+            "prompt": "You spent $1,250 at X. What is half?",
+            "skill_id": "money_arithmetic",
+            "operation": "charge_total",
+            "op": "div",
+            "args": [1250, 2],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertEqual(reasons, [], f"Expected no rejection for comma-formatted number, got: {reasons}")
+
 
 class TestRun(unittest.TestCase):
     """Integration test for run() — _call_llm and _build_context are mocked."""

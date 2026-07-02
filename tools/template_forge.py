@@ -49,8 +49,8 @@ WEATHER_OPS: frozenset[str] = frozenset([
 ])
 ALL_GROUNDED_OPS: frozenset[str] = MONEY_OPS | WEATHER_OPS
 
-# Number regex used for hallucination check
-_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+# Number regex used for hallucination check (includes optional leading minus for negative numbers)
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 # ---------------------------------------------------------------------------
 # OpenAI client (lazy singleton, same pattern as server/stt.py)
@@ -195,11 +195,13 @@ def _validate(candidate: dict, existing_prompts: set[str]) -> list[str]:
         reasons.append(f"compute_error:{exc}")
         return reasons  # args are unusable; skip number check
 
-    # 3. Every number token ≥ 10 in prompt must appear in args
+    # 3. Every number token with |value| ≥ 10 in prompt must appear in args
+    # Normalize comma-formatted numbers for validation (e.g., "$1,250" → "1250")
+    prompt_normalized = re.sub(r"(?<=\d),(?=\d)", "", prompt)
     args_as_floats = {float(a) for a in args}
-    for tok in _NUMBER_RE.findall(prompt):
+    for tok in _NUMBER_RE.findall(prompt_normalized):
         val = float(tok)
-        if val >= 10 and val not in args_as_floats:
+        if abs(val) >= 10 and val not in args_as_floats:
             reasons.append(f"hallucinated_number:{tok}")
 
     # 4. operation must be a known grounded op
