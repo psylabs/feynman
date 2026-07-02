@@ -423,6 +423,7 @@ def _attach_tip(slot: dict, attempt: dict) -> None:
                 slow = latency > tier_target * 1.25
 
     if wrong or slow:
-        tips = strategies.tips_for(skill_id, params, expected)
+        tips = strategies.tips_for(skill_id, params, expected,
+                                   tolerance=slot.get("tolerance"))
         if tips:
             attempt["tip"] = tips[0]
