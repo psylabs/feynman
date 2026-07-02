@@ -657,6 +657,7 @@ table.leaderboard td { vertical-align: middle; }
 #fb-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #fb-list .fb-row { border-bottom: 1px solid #1f2228; padding-bottom: 6px; margin-top: 0; }
 #fb-list .fb-row:last-child { border-bottom: 0; }
+.fb-row .fb-tip { flex-basis: 100%; font-size: 11px; color: #888; margin-top: 2px; margin-left: 22px; }
 
 aside#debug {
   grid-area: debug;

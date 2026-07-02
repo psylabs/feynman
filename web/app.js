@@ -1385,6 +1385,7 @@
       const attemptId = x.id == null ? "" : String(x.id);
       const attemptClientId = x.client_id || "";
       const userId = x.user_id || "";
+      const tipHtml = x.tip ? `<span class="fb-tip muted small">${escapeHtml(x.tip)}</span>` : "";
       return `<div class="fb-row" data-session-id="${escapeHtml(sid)}" data-attempt-id="${escapeHtml(attemptId)}" data-attempt-client-id="${escapeHtml(attemptClientId)}" data-user-id="${escapeHtml(userId)}">
         <span class="fb-mark ${cls}">${mark}</span>
         <span class="fb-prompt">${escapeHtml(x.prompt_text)}</span>
@@ -1397,6 +1398,7 @@
         <input type="text" class="fb-reason" placeholder="why? (optional)" maxlength="200">
         <button class="fb-save tiny">save</button>
         <span class="fb-status muted small"></span>
+        ${tipHtml}
       </div>`;
     }).join("");
     return `<h3 class="section">Rate these questions <span class="muted small">(optional, helps tune future drills)</span></h3>

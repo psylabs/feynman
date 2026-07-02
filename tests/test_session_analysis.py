@@ -226,5 +226,61 @@ class WeakLinesThresholdTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
 
 
+class TipAttachmentTests(unittest.TestCase):
+    """Verify strategy tips are attached to wrong/slow attempts by review_analysis."""
+
+    # A simple subtraction that triggers strat_count_up (gap = 2, ≤ 4).
+    # classify("subtraction", {"a": 13, "b": 11}) → primitive "sub.within20"
+    _SLOT = {
+        "role": "theme",
+        "skill_id": "subtraction",
+        "fact_key": "sub:13-11",
+        "display": "13 − 11",
+        "target_ms": 3000,
+    }
+
+    def _attempt(self, **overrides):
+        base = {
+            "position_in_session": 1,
+            "skill_id": "subtraction",
+            "parameters": {"a": 13, "b": 11},
+            "expected_answer": 2,
+            "correct": 0,
+            "skipped": 0,
+            "onset_latency_ms": None,
+            "resolution_latency_ms": 3000,
+        }
+        base.update(overrides)
+        return base
+
+    def test_wrong_attempt_gets_tip(self):
+        """A wrong (correct=0) attempt should receive a tip containing the expected answer."""
+        attempt = self._attempt(correct=0)
+        session_analysis.review_analysis([self._SLOT], [attempt])
+        self.assertIn("tip", attempt)
+        # The count-up tip for 13-11 mentions "2" (the expected answer).
+        self.assertIn("2", attempt["tip"])
+
+    def test_slow_correct_attempt_gets_tip(self):
+        """A correct but slow primitive attempt (onset > 1200 × 1.25) should get a tip."""
+        # onset_latency_ms=2000 > PRIMITIVE_ONSET_TARGET_MS(1200) × 1.25 = 1500
+        attempt = self._attempt(correct=1, onset_latency_ms=2000)
+        session_analysis.review_analysis([self._SLOT], [attempt])
+        self.assertIn("tip", attempt)
+
+    def test_fast_correct_attempt_has_no_tip(self):
+        """A correct and fast attempt should NOT have a tip key."""
+        # onset_latency_ms=800 < 1500 → not slow
+        attempt = self._attempt(correct=1, onset_latency_ms=800)
+        session_analysis.review_analysis([self._SLOT], [attempt])
+        self.assertNotIn("tip", attempt)
+
+    def test_skipped_attempt_has_no_tip(self):
+        """Skipped attempts are never given a tip, regardless of latency."""
+        attempt = self._attempt(skipped=1, correct=0)
+        session_analysis.review_analysis([self._SLOT], [attempt])
+        self.assertNotIn("tip", attempt)
+
+
 if __name__ == "__main__":
     unittest.main()

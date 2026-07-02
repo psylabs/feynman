@@ -4,7 +4,7 @@ import json
 import statistics
 from collections import Counter, defaultdict
 
-from server import diagnosis
+from server import diagnosis, strategies, taxonomy
 
 
 ROLE_LABELS = {
@@ -53,6 +53,7 @@ def review_analysis(slots: list[dict], attempts: list[dict], exploratory: bool =
         attempt = by_position.get(idx)
         if not attempt:
             continue
+        _attach_tip(slot, attempt)
         role = slot.get("role") or "theme"
         role_rows[role].append(attempt)
         if attempt.get("correct") and attempt.get("resolution_latency_ms") is not None:
@@ -377,3 +378,51 @@ def _next_time_line(focus_stats: list[dict]) -> str:
     if focus_stats:
         return "Next time can keep these in rotation and probe the next slowest facts."
     return "Next time should remain exploratory until there is enough data to focus."
+
+
+def _attach_tip(slot: dict, attempt: dict) -> None:
+    """Attach a strategy tip to an attempt dict if it is wrong or slow.
+
+    Mutates the attempt in place: sets ``attempt["tip"]`` to the first verified
+    tip, or leaves the key absent.  Skipped attempts are always left alone.
+    """
+    if attempt.get("skipped"):
+        return
+
+    skill_id = slot.get("skill_id") or attempt.get("skill_id")
+    params = attempt.get("parameters") or {}
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except (TypeError, ValueError):
+            params = {}
+
+    expected_raw = attempt.get("expected_answer")
+    try:
+        expected = float(expected_raw) if expected_raw is not None else None
+    except (TypeError, ValueError):
+        expected = None
+
+    if not skill_id or expected is None:
+        return
+
+    correct = attempt.get("correct")
+    wrong = not correct
+    slow = False
+
+    if correct:
+        taxon = taxonomy.classify(skill_id, params)
+        if taxon is not None:
+            if taxon.tier == "primitive":
+                latency = attempt.get("onset_latency_ms")
+                tier_target: float = taxonomy.PRIMITIVE_ONSET_TARGET_MS
+            else:
+                latency = attempt.get("resolution_latency_ms")
+                tier_target = slot.get("target_ms")  # type: ignore[assignment]
+            if latency is not None and tier_target is not None:
+                slow = latency > tier_target * 1.25
+
+    if wrong or slow:
+        tips = strategies.tips_for(skill_id, params, expected)
+        if tips:
+            attempt["tip"] = tips[0]
