@@ -62,7 +62,7 @@ ALL_GROUNDED_OPS: frozenset[str] = MONEY_OPS | WEATHER_OPS
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 # Validator constants
-_FRIENDLY_PCTS: frozenset[int] = frozenset({5, 10, 15, 20, 25, 30, 40, 50, 75})
+_FRIENDLY_PCTS: frozenset[int] = frozenset({5, 15, 20, 25, 30, 40, 50, 75})  # no 10% — decimal shift
 _MAX_ADDENDS: int = 4
 _MAX_EXPECTED: float = 100_000.0
 _PROMPT_MAX_CHARS: int = 100

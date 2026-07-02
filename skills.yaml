@@ -49,7 +49,7 @@
   tolerance:
     type: money
   parameter_schema:
-    percentages: [5, 10, 15, 18, 20, 25, 50]
+    percentages: [5, 15, 18, 20, 25, 50]
   templates:
     - "What is {pct} percent of {base}?"
 

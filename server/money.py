@@ -27,7 +27,7 @@ ROOT = Path(__file__).parent.parent
 DEFAULT_CSV = ROOT / "data" / "transactions.csv"
 PLAID_ENV = "FEYNMAN_PLAID_LATEST_JSON"
 RECENT_WINDOW_DAYS = 7
-FRIENDLY_PCTS = (10, 15, 20, 25, 30, 40, 50)
+FRIENDLY_PCTS = (15, 20, 25, 30, 40, 50)  # 10% is a decimal shift — trivial by user rule
 EXCLUDED_PRACTICE_PREFIXES = (
     "Home:",
     "Taxes:",

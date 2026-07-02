@@ -252,25 +252,28 @@ def _gen_division(level: int, target: dict | None = None) -> dict:
 
 
 def _gen_percent_of(level: int, target: dict | None = None) -> dict:
+    # 10% (a pure decimal shift) and base 100 are trivial by user rule
+    # (2026-07-02 recalibration + "percentages of 100 are trivial" feedback) —
+    # neither appears in any pool below.
     if target and target.get("percentage") is not None:
         pct = int(target["percentage"])
         # Pick a base appropriate for the level
         if level == 1:
-            base = random.choice([40, 60, 80, 100, 120, 200, 50, 250])
+            base = random.choice([40, 60, 80, 120, 200, 50, 250])
         elif level == 2:
-            base = random.choice([60, 80, 100, 120, 150, 200, 75, 145])
+            base = random.choice([60, 80, 120, 150, 200, 75, 145])
         else:
             base = random.choice([137, 175, 240, 95, 165, 285])
     else:
         if level == 1:
-            pct = random.choice([10, 20, 50])
-            base = random.choice([40, 60, 80, 100, 120, 200, 50, 250])
+            pct = random.choice([5, 20, 50])
+            base = random.choice([40, 60, 80, 120, 200, 50, 250])
         elif level == 2:
             if random.random() < 0.5:
                 pct = random.choice([15, 25, 18])
-                base = random.choice([60, 80, 100, 120, 200, 150])
+                base = random.choice([60, 80, 120, 200, 150])
             else:
-                pct = random.choice([10, 20, 50])
+                pct = random.choice([5, 20, 50])
                 base = random.choice([75, 85, 145, 165, 230])
         else:
             pct = random.choice([15, 18, 25])

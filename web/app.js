@@ -260,10 +260,12 @@
   async function updateOfflineStatus(userId) {
     const el = $("offline-status");
     const syncEl = $("sync-status");
+    const refreshBtn = $("refresh-pack");
     if (!el) return;
     if (!userId || !offlineAvailable()) {
       el.classList.add("hidden");
       if (syncEl) syncEl.classList.add("hidden");
+      if (refreshBtn) refreshBtn.classList.add("hidden");
       return;
     }
     try {
@@ -272,6 +274,26 @@
       el.textContent = `${s.seedRemaining} offline prompts · ${s.outboxPending} pending`;
       el.classList.toggle("pending", s.outboxPending > 0);
       el.classList.remove("hidden");
+      if (refreshBtn) {
+        refreshBtn.classList.toggle("hidden", !navigator.onLine);
+        if (!refreshBtn.dataset.wired) {
+          refreshBtn.dataset.wired = "1";
+          refreshBtn.addEventListener("click", async () => {
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = "refreshing…";
+            try {
+              await window.feynmanOffline.refreshSeedPack(userId, 40);
+              const s2 = await window.feynmanOffline.stats(userId);
+              el.textContent = `${s2.seedRemaining} offline prompts · ${s2.outboxPending} pending`;
+              refreshBtn.textContent = "pack refreshed ✓";
+            } catch (err) {
+              refreshBtn.textContent = "refresh failed — retry";
+            }
+            refreshBtn.disabled = false;
+            setTimeout(() => { refreshBtn.textContent = "refresh pack"; }, 3000);
+          });
+        }
+      }
       if (syncEl) {
         const last = s.lastSync || {};
         syncEl.classList.remove("synced", "error");

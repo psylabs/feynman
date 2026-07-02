@@ -422,6 +422,17 @@ table.metrics { margin-top: 4px; }
   font-variant-numeric: tabular-nums;
 }
 .offline-status.pending { color: #c9b86d; }
+.refresh-pack {
+  font-size: 11px;
+  color: #999;
+  background: none;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 2px 10px;
+  margin-top: 6px;
+  cursor: pointer;
+}
+.refresh-pack:disabled { opacity: 0.5; cursor: default; }
 .sync-status {
   font-size: 11px;
   color: #777;
