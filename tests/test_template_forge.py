@@ -443,6 +443,41 @@ class TestValidate(unittest.TestCase):
         self.assertTrue(any("1000" in r for r in reasons))
 
     # -----------------------------------------------------------------------
+    # zero_arg (task-6.1 refine-4)
+    # -----------------------------------------------------------------------
+
+    def test_zero_arg_rejected(self):
+        """A candidate with a 0 operand is degenerate and must be rejected.
+        Models the live-run failure: 'You spent $36 at Amazon and $0 at
+        Google Cloud. What's the difference?'"""
+        cand = {
+            "prompt": "You spent $36 at Amazon and $0 at Google Cloud. What's the difference?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "delta",
+            "args": [36, 0],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any(r.startswith("zero_arg:") for r in reasons),
+            f"Expected zero_arg, got: {reasons}",
+        )
+
+    def test_zero_arg_normal_case_unaffected(self):
+        """A candidate with no 0 operand never gets a zero_arg reason."""
+        cand = {
+            "prompt": "You spent $36 at Amazon and $22 at PRO on Tuesday. What's the difference?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "delta",
+            "args": [36, 22],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertEqual(reasons, [], f"Expected no rejection, got: {reasons}")
+
+    # -----------------------------------------------------------------------
     # op/operation compatibility table (task-6.1 refine-3)
     # -----------------------------------------------------------------------
 

@@ -66,9 +66,10 @@ _MAX_PER_OP_BATCH: int = 3
 # Compatibility table: which compute ops legitimately implement each grounded
 # operation.  The `operation` label keys the FSRS item, so a mislabeled pair
 # (e.g. an addition problem labeled split_bill) pollutes scheduling.
-# f_to_c_approx uses the subtract-then-halve rule ((F - 32) / 2 ≈ C); a single
-# flat op can only express one step, so either step encoding is accepted:
-# "sub" for the F - 32 step or "div" for the halving step.
+# f_to_c_approx uses the app's rough subtract-30-then-halve rule
+# ((F - 30) / 2 ≈ C, see server/weather.py); a single flat op can only express
+# one step, so either step encoding is accepted: "sub" for the F - 30 step or
+# "div" for the halving step.
 _OP_COMPAT: dict[str, frozenset[str]] = {
     "charge_total":        frozenset({"add_list"}),
     "category_difference": frozenset({"sub", "delta"}),
@@ -132,6 +133,10 @@ Never put a compute name ("sub", "add_list", "pct_of", "div", "delta") in the
 "operation" field — that field takes ONLY the grounded labels above, and the
 "op" field takes ONLY the five compute names.
 
+LABELING: operation=charge_total for any "what's the total" over multiple
+purchases; operation=split_bill ONLY for dividing one bill among N people
+(op=div).
+
 HARD RULES (the validator enforces every one — violating any causes rejection):
 1. prompt ≤ 90 chars, ends with "?", no filler phrases ("If you...", "What is the total...").
 2. Every arg number MUST appear literally in the prompt. No hiding numbers behind words like "half".
@@ -144,6 +149,7 @@ HARD RULES (the validator enforces every one — violating any causes rejection)
 9. Answer must be in the range (0, 100000].
 10. weather_math prompts must NOT contain "$". money_arithmetic must NOT contain "°" or "mph".
 11. Vary sentence structure — do not repeat the same framing across candidates.
+12. No arg may be 0 — a zero operand makes the problem degenerate.
 
 STYLE: write in the app's natural second-person voice, with recency/day texture —
 start money prompts with "You spent" or a day reference where natural; never list
@@ -161,6 +167,9 @@ note how "operation" is a grounded label while "op" is a compute name):
 ✓ {"prompt": "You spent $120 at Chipotle on Friday. What's a 15% tip?",
    "skill_id": "money_arithmetic", "operation": "restaurant_tip_15", "op": "pct_of",
    "args": [15, 120], "source": "plaid.latest.json"}
+✓ {"prompt": "You spent $12 at MTA, $36 at Amazon and $22 at PRO on Monday. What's the total?",
+   "skill_id": "money_arithmetic", "operation": "charge_total", "op": "add_list",
+   "args": [12, 36, 22], "source": "plaid.latest.json"}
 ✓ {"prompt": "Today's high is 89, low 75. What's the range?",
    "skill_id": "weather_math", "operation": "daily_range", "op": "delta",
    "args": [89, 75], "source": "open-meteo"}
@@ -173,6 +182,8 @@ BAD EXAMPLES (rejected — do not imitate):
 listing; not natural second-person phrasing (say "You spent $36 at Amazon and $22 at PRO..." instead)
 ✗ {"operation": "delta", "op": "delta", ...} — "delta" is a compute name; the "operation" \
 field must be a grounded label like category_difference or daily_range
+✗ {"operation": "split_bill", "op": "add_list", ...} — a multi-purchase total is \
+charge_total; split_bill is ONLY for dividing one bill among people (op=div)
 """
 
 
@@ -304,6 +315,12 @@ def _validate(
     elif op == "add_list":
         if len(args) > _MAX_ADDENDS:
             reasons.append(f"too_many_addends:{len(args)}")
+
+    # 4b. zero_arg: a 0 operand makes a degenerate problem (e.g. "You spent
+    #     $36 at Amazon and $0 at Google Cloud. What's the difference?")
+    for arg in args:
+        if float(arg) == 0.0:
+            reasons.append(f"zero_arg:{arg}")
 
     # 5. Domain separation
     if skill_id == "weather_math" and "$" in prompt:
