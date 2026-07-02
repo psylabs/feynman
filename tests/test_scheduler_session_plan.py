@@ -2,7 +2,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from server import scheduler
+from server import family_stats, scheduler
 
 
 def _mul_compound_attempts(n=6, a=13, b=4, correct=0, latency=6000, start=0):
@@ -100,7 +100,7 @@ class SlotShapeTests(unittest.TestCase):
         "skill_id", "target_fact", "level", "fact_key", "display", "role",
         "reason", "target_ms", "diagnosis_median_latency_ms",
         "diagnosis_accuracy", "diagnosis_n", "diagnosis_gap_ratio",
-        "family", "covers",
+        "family", "covers", "tier",
     }
 
     def test_every_slot_has_the_expected_shape(self):
@@ -149,7 +149,12 @@ class DueFirstTests(unittest.TestCase):
         now = time.time()
         due = [{"item_key": "mul:6x7", "tier": "primitive",
                 "family": "mul.x7", "due_at": now - 10 * 86400}]
-        storage = FakeStorage(attempts=_mul_compound_attempts(), due=due)
+        # _mul_compound_attempts classifies to key "mul.2dx1d" (family == key for
+        # compound), so it lands in recent and gets blocked from weak selection
+        # (Fix 2). _pct_attempts classifies to key "pct:15" which != family "pct",
+        # so "pct" family is NOT blocked by the recent-key set — giving us a visible
+        # weak slot to assert ordering against.
+        storage = FakeStorage(attempts=_mul_compound_attempts() + _pct_attempts(), due=due)
         # Isolate selection order from the cosmetic spread/alternation reshuffle.
         with patch("server.scheduler._spread_duplicates_with_alternation",
                    side_effect=lambda s: s):
@@ -207,7 +212,15 @@ class GroundedShareTests(unittest.TestCase):
                 self.assertIsNotNone(s["covers"])
 
     def test_tip_split_not_hardcoded_into_every_plan(self):
-        attempts = _sub_compound_attempts() + _pct_attempts()
+        # 16 mul_compound attempts fill RECENT_KEY_WINDOW=15 so sub.2d-2d.bo and
+        # pct fall outside recency — both become valid weak candidates (Fix 2).
+        # Sub slots skin to weather ops (not tip); pct slots are 50/50 tip vs
+        # category_amount, so restaurant_tip_15 cannot appear in every single run.
+        attempts = (
+            _mul_compound_attempts(n=16, start=200)
+            + _sub_compound_attempts(start=100)
+            + _pct_attempts(start=0)
+        )
         storage = FakeStorage(attempts=attempts)
         have_tip = 0
         for _ in range(10):
@@ -268,6 +281,124 @@ class ExclusionStubTests(unittest.TestCase):
         plan = scheduler.build_session_plan(storage, "u", 6, _noop)
         due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
         self.assertNotIn("mul:6x7", due_keys)
+
+
+def _make_minimal_slot(skill_id, fact_key, family, tier, role="weak"):
+    """Build the minimal slot dict that apply_skins inspects."""
+    return {
+        "skill_id": skill_id,
+        "fact_key": fact_key,
+        "family": family,
+        "tier": tier,
+        "role": role,
+        "target_fact": None,
+        "level": 1,
+        "display": family,
+        "reason": f"{role}: {family}",
+        "target_ms": 1200,
+        "diagnosis_median_latency_ms": None,
+        "diagnosis_accuracy": None,
+        "diagnosis_n": None,
+        "diagnosis_gap_ratio": None,
+        "covers": None,
+    }
+
+
+class SkinTierGuardTests(unittest.TestCase):
+    """Fix 1: apply_skins must never skin PRIMITIVE-tier slots."""
+
+    def test_due_primitive_slot_not_skinned(self):
+        """A due primitive div:7x8 slot must not be skinned even when the
+        grounded count is below target and 'div' matches a SKINS prefix."""
+        now = time.time()
+        due = [{"item_key": "div:7x8", "tier": "primitive",
+                "family": "div.x7", "due_at": now - 5 * 86400}]
+        # compound weak families give apply_skins something to work with
+        attempts = _sub_compound_attempts() + _pct_attempts()
+        storage = FakeStorage(attempts=attempts, due=due)
+        # Run several times — skinning has randomness in which slot is chosen
+        for _ in range(20):
+            plan = scheduler.build_session_plan(storage, "u", 6, _noop)
+            for s in plan:
+                if s.get("fact_key") == "div:7x8":
+                    self.assertEqual(
+                        s["skill_id"], "division",
+                        f"Primitive div:7x8 was skinned to {s['skill_id']}",
+                    )
+                    self.assertFalse(
+                        s["role"].endswith("+skin"),
+                        "Primitive due slot should not carry +skin role",
+                    )
+
+    def test_bootstrap_slot_never_skinned(self):
+        """Bootstrap slots are primitive; apply_skins must skip them even when
+        their family (e.g. div.x7) matches a SKINS prefix."""
+        boot = _make_minimal_slot("division", "div:2x7", "div.x7", "primitive", "bootstrap")
+        # compound partner gives apply_skins a candidate so the budget is consumed
+        compound = _make_minimal_slot("subtraction", "sub.2d-2d.bo", "sub.2d-2d.bo", "compound")
+        slots = [boot, compound]
+        scheduler.apply_skins(slots, 2)
+        self.assertEqual(slots[0]["skill_id"], "division",
+                         "Bootstrap primitive slot must not be skinned")
+        self.assertFalse(slots[0]["role"].endswith("+skin"))
+
+    def test_compound_weak_family_still_skinned(self):
+        """A compound weak-family slot (sub.3d-2d.bt → SKINS 'sub.3d') must
+        still be converted to a grounded op after the primitive guard is added."""
+        slot = _make_minimal_slot("subtraction", "sub.3d-2d.bt", "sub.3d-2d.bt", "compound")
+        slots = [slot]
+        scheduler.apply_skins(slots, 1)
+        self.assertIn(
+            slots[0]["skill_id"], ("money_arithmetic", "weather_math"),
+            "Compound slot sub.3d-2d.bt should be skinned to a grounded op",
+        )
+        self.assertTrue(slots[0]["role"].endswith("+skin"))
+
+
+class WeakFamilyCooldownTests(unittest.TestCase):
+    """Fix 2: weak-family picks must respect cooldown and recent-key exclusion."""
+
+    def test_weak_family_in_cooldown_not_selected(self):
+        """A family present in the cooldown set must not appear as a weak drill."""
+        # _sub_compound_attempts(a=47, b=28) classifies to sub.2d-2d.bo
+        blocked = "sub.2d-2d.bo"
+        storage = FakeStorageWithExclusions(
+            attempts=_sub_compound_attempts(),
+            cooldowns={blocked},
+        )
+        for _ in range(10):
+            plan = scheduler.build_session_plan(storage, "u", 6, _noop)
+            weak_keys = [s["fact_key"] for s in plan if s["role"].startswith("weak")]
+            self.assertNotIn(
+                blocked, weak_keys,
+                f"Cooldown family {blocked!r} appeared as a weak slot",
+            )
+
+    def test_weak_family_in_recent_keys_not_selected(self):
+        """A family recently practiced (in the last RECENT_KEY_WINDOW attempts)
+        must not be selected as a weak drill."""
+        # Create a recent attempt that classifies to sub.2d-2d.bo
+        now = time.time()
+        recent_attempt = {
+            "skill_id": "subtraction",
+            "parameters": {"a": 47, "b": 28, "level": 2},
+            "correct": 0,
+            "skipped": 0,
+            "resolution_latency_ms": 6000,
+            "onset_latency_ms": 1000,
+            "created_at": now,
+        }
+        # Build enough history for sub.2d-2d.bo to be a weak family (n >= 5)
+        # but put the recent attempt first so it appears in the RECENT_KEY_WINDOW
+        attempts = [recent_attempt] + _sub_compound_attempts(n=5, start=now - 1000)
+        storage = FakeStorage(attempts=attempts)
+        for _ in range(10):
+            plan = scheduler.build_session_plan(storage, "u", 6, _noop)
+            weak_keys = [s["fact_key"] for s in plan if s["role"].startswith("weak")]
+            self.assertNotIn(
+                "sub.2d-2d.bo", weak_keys,
+                "Recently seen family sub.2d-2d.bo should not be a weak slot",
+            )
 
 
 if __name__ == "__main__":

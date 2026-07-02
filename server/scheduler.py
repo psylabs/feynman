@@ -194,14 +194,19 @@ def build_session_plan(
             slots.append(_bootstrap_slot(fam, attempts, skill_targets))
 
     # 3. Weak-family drills fill the rest (weak_families order, round-robin).
+    #    excluded_keys always wins; cooldown/recency also blocked (no overdue bypass
+    #    since weak slots aren't due items).
     weak = [
         f for f in family_stats.weak_families(stats, skill_targets, limit=10)
-        if f not in excluded
+        if f not in excluded and f not in blocked_unless_overdue
     ]
     if weak:
         i = 0
         while len(slots) < length and i <= length * 4:
-            slots.append(_weak_family_slot(weak[i % len(weak)], attempts, skill_targets))
+            f = weak[i % len(weak)]
+            fam_stat = stats.get(f, {})
+            tier = fam_stat.get("tier") or ("primitive" if _is_primitive_family(f) else "compound")
+            slots.append(_weak_family_slot(f, attempts, skill_targets, tier=tier))
             i += 1
 
     # 4. Cold-start fallback for brand-new users: fill any remaining slots.
@@ -241,6 +246,8 @@ def apply_skins(slots: list[dict], length: int) -> list[dict]:
             break
         if s["skill_id"] in GROUNDED_SKILL_IDS:
             continue
+        if s.get("tier") == "primitive":
+            continue
         fam = s.get("family") or ""
         prefix = next((p for p in SKINS if fam.startswith(p)), None)
         if prefix is None:
@@ -275,6 +282,7 @@ def _make_slot(
     display: str | None = None,
     reason: str | None = None,
     target_ms: int | None = None,
+    tier: str | None = None,
 ) -> dict:
     """Build a plan slot with the full shape the orchestrator/analysis consume."""
     if display is None:
@@ -294,6 +302,7 @@ def _make_slot(
         "diagnosis_gap_ratio": None,
         "family": family,
         "covers": covers,
+        "tier": tier,
     }
 
 
@@ -312,23 +321,27 @@ def _slot_for_item(item: dict, attempts: list[dict], skill_targets: dict) -> dic
     )
     return _make_slot(
         skill_id, key, "due", target_fact, level,
-        family=family, target_ms=target_ms,
+        family=family, target_ms=target_ms, tier=item.get("tier"),
         reason=f"due review: {taxonomy.family_display(family)}",
     )
 
 
-def _weak_family_slot(family: str, attempts: list[dict], skill_targets: dict) -> dict:
+def _weak_family_slot(
+    family: str, attempts: list[dict], skill_targets: dict, tier: str | None = None
+) -> dict:
     """A drill slot for a weak family. Generated at the family's evidence-based
     level; no exact target (family-level variety)."""
     skill_id = _skill_for_item_key(family)
     level = family_stats.family_level(attempts, family)
+    if tier is None:
+        tier = "primitive" if _is_primitive_family(family) else "compound"
     target_ms = (
-        taxonomy.PRIMITIVE_ONSET_TARGET_MS if _is_primitive_family(family)
+        taxonomy.PRIMITIVE_ONSET_TARGET_MS if tier == "primitive"
         else skill_targets.get(skill_id)
     )
     return _make_slot(
         skill_id, family, "weak", None, level,
-        family=family, target_ms=target_ms,
+        family=family, target_ms=target_ms, tier=tier,
         reason=f"needs work: {taxonomy.family_display(family)}",
     )
 
@@ -339,7 +352,7 @@ def _bootstrap_slot(family: str, attempts: list[dict], skill_targets: dict) -> d
     level = family_stats.family_level(attempts, family)
     return _make_slot(
         skill_id, fact_key, BOOTSTRAP_ROLE, target_fact, level,
-        family=family, target_ms=taxonomy.PRIMITIVE_ONSET_TARGET_MS,
+        family=family, target_ms=taxonomy.PRIMITIVE_ONSET_TARGET_MS, tier="primitive",
         reason=f"first look: {taxonomy.family_display(family)}",
     )
 
