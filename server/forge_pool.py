@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 ROOT = Path(__file__).parent.parent
 POOL_PATH: Path = ROOT / "data" / "template_pool.json"
 
+# Keys beyond these indicate the scheduler wants something specific a canned entry can't honor.
+_BASE_TARGET_KEYS = frozenset({"operation", "level"})
+
+
+def eligible(target: dict | None) -> bool:
+    """Return False when target contains keys beyond 'operation' and 'level'.
+
+    A pinned target (e.g., people=4, location hint) means the scheduler wants
+    something specific that a canned forge entry can't honor; skip the pool.
+    """
+    if not target:
+        return True
+    return not bool(target.keys() - _BASE_TARGET_KEYS)
+
 
 def take(skill_id: str, operation: str) -> Optional[dict]:
     """Return and consume the first unused pool entry matching skill_id+operation.

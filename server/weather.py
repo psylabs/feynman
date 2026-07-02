@@ -83,7 +83,8 @@ def generate_problem(target: dict | None = None) -> dict:
         ["temp_delta", "daily_range", "f_to_c_approx", "wind_delta"]
     )
     # Try the forge pool first — LLM-generated prompts grounded on real data.
-    entry = forge_pool.take("weather_math", op)
+    # Skip when target carries pinned keys the pool can't honor.
+    entry = forge_pool.take("weather_math", op) if forge_pool.eligible(target) else None
     if entry is not None:
         try:
             expected = forge_ops.OPS[entry["op"]](*entry["args"])

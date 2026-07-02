@@ -35,6 +35,9 @@ EXCLUDED_PRACTICE_PREFIXES = (
     "Transfer",
     "Uncategorized",
 )
+# These operations pull real recent Plaid transactions (merchant/amount/recency);
+# a canned pool entry can't provide that live grounding — never serve from the pool.
+_FORGE_EXCLUDED_OPS = frozenset({"restaurant_tip_15", "split_bill"})
 
 
 def load_transactions(path: Path = DEFAULT_CSV) -> list[dict]:
@@ -120,7 +123,10 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
         "category_difference",
     ])
     # Try the forge pool first — LLM-generated prompts grounded on real data.
-    entry = forge_pool.take("money_arithmetic", operation)
+    # Skip for live-Plaid ops (need real merchant/recency) or pinned targets.
+    entry = None
+    if operation not in _FORGE_EXCLUDED_OPS and forge_pool.eligible(target):
+        entry = forge_pool.take("money_arithmetic", operation)
     if entry is not None:
         try:
             expected = forge_ops.OPS[entry["op"]](*entry["args"])

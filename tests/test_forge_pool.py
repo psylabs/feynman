@@ -331,6 +331,186 @@ class TestWeatherForgeIntegration(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# forge_pool.eligible() unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestEligible(unittest.TestCase):
+    """eligible() returns False when target contains keys beyond operation+level."""
+
+    def test_none_is_eligible(self):
+        self.assertTrue(forge_pool.eligible(None))
+
+    def test_empty_dict_is_eligible(self):
+        self.assertTrue(forge_pool.eligible({}))
+
+    def test_operation_only_is_eligible(self):
+        self.assertTrue(forge_pool.eligible({"operation": "charge_total"}))
+
+    def test_operation_and_level_is_eligible(self):
+        self.assertTrue(forge_pool.eligible({"operation": "charge_total", "level": 2}))
+
+    def test_extra_key_people_not_eligible(self):
+        self.assertFalse(forge_pool.eligible({"operation": "charge_total", "people": 4}))
+
+    def test_extra_key_location_not_eligible(self):
+        self.assertFalse(forge_pool.eligible({"operation": "temp_delta", "location": "NYC"}))
+
+    def test_extra_key_charge_not_eligible(self):
+        self.assertFalse(forge_pool.eligible({"operation": "restaurant_tip_15", "charge": {"payee": "Diner"}}))
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: live-Plaid ops never consumed from pool
+# ---------------------------------------------------------------------------
+
+
+class TestMoneyPlaidOpsExcluded(unittest.TestCase):
+    """restaurant_tip_15 and split_bill must NEVER be served from the forge pool."""
+
+    def _pool_entry(self, operation: str) -> dict:
+        return _make_entry(
+            id="rtp15entry01",
+            prompt="You spent $120 at Diner. What is a 15 percent tip?",
+            skill_id="money_arithmetic",
+            operation=operation,
+            op="pct_of",
+            args=[15, 120],
+            used=False,
+        )
+
+    def test_restaurant_tip_15_not_consumed_from_pool(self):
+        """Pool entry for restaurant_tip_15 is ignored; built-in Plaid path fires."""
+        entry = self._pool_entry("restaurant_tip_15")
+        rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Dining", "amount": 80.0}]
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = money.generate_problem(rows=rows, target={"operation": "restaurant_tip_15"})
+                on_disk = json.loads(pool.read_text())
+
+        # Entry must NOT be consumed (used stays False)
+        self.assertFalse(on_disk[0]["used"])
+        # Built-in Plaid path fires — source is not "forge"
+        self.assertNotEqual(result["parameters"].get("source"), "forge")
+        # It's a real tip problem
+        self.assertEqual(result["parameters"]["operation"], "restaurant_tip_15")
+
+    def test_split_bill_not_consumed_from_pool(self):
+        """Pool entry for split_bill is ignored; built-in path fires."""
+        entry = self._pool_entry("split_bill")
+        rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Dining", "amount": 84.0}]
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = money.generate_problem(rows=rows, target={"operation": "split_bill"})
+                on_disk = json.loads(pool.read_text())
+
+        self.assertFalse(on_disk[0]["used"])
+        self.assertNotEqual(result["parameters"].get("source"), "forge")
+        self.assertEqual(result["parameters"]["operation"], "split_bill")
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: pinned targets skip the pool (money + weather)
+# ---------------------------------------------------------------------------
+
+
+class TestPinnedTargetSkipsPool(unittest.TestCase):
+    """target with extra keys must not consume a pool entry in either module."""
+
+    def _money_pool_entry(self) -> dict:
+        return _make_entry(
+            id="money_pinned01",
+            prompt="You had 2 charges at Grocery: $30 and $20. About what's the total?",
+            skill_id="money_arithmetic",
+            operation="charge_total",
+            op="add_list",
+            args=[30, 20],
+            used=False,
+        )
+
+    def _weather_pool_entry(self) -> dict:
+        return _make_entry(
+            id="weather_pinned01",
+            prompt="Today's high is 72 and low is 55. What's the daily range?",
+            skill_id="weather_math",
+            operation="daily_range",
+            op="delta",
+            args=[72, 55],
+            source="open-meteo",
+            used=False,
+        )
+
+    def test_money_pinned_target_does_not_consume_pool(self):
+        """target={"operation": "charge_total", "people": 4} skips the pool."""
+        entry = self._money_pool_entry()
+        rows = [
+            {"date": "2026-01-02", "payee": "Trader Joe's", "category": "Groceries", "amount": 18.42},
+            {"date": "2026-01-08", "payee": "Trader Joe's", "category": "Groceries", "amount": 33.01},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = money.generate_problem(
+                    rows=rows,
+                    target={"operation": "charge_total", "people": 4},
+                )
+                on_disk = json.loads(pool.read_text())
+
+        self.assertFalse(on_disk[0]["used"])
+        self.assertNotEqual(result["parameters"].get("source"), "forge")
+
+    def test_money_operation_and_level_target_consumes_pool(self):
+        """target={"operation": "charge_total", "level": 2} IS eligible — pool entry consumed."""
+        entry = self._money_pool_entry()
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = money.generate_problem(
+                    target={"operation": "charge_total", "level": 2},
+                )
+                on_disk = json.loads(pool.read_text())
+
+        self.assertTrue(on_disk[0]["used"])
+        self.assertEqual(result["parameters"].get("source"), "forge")
+
+    def test_weather_pinned_target_does_not_consume_pool(self):
+        """weather: target with extra key (e.g., location) skips the pool."""
+        entry = self._weather_pool_entry()
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = weather.generate_problem(
+                    target={"operation": "daily_range", "location": "NYC"},
+                )
+                on_disk = json.loads(pool.read_text())
+
+        self.assertFalse(on_disk[0]["used"])
+        self.assertNotEqual(result["parameters"].get("source"), "forge")
+
+    def test_weather_operation_and_level_target_consumes_pool(self):
+        """weather: target={"operation": "daily_range", "level": 2} consumes the pool."""
+        entry = self._weather_pool_entry()
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = weather.generate_problem(
+                    target={"operation": "daily_range", "level": 2},
+                )
+                on_disk = json.loads(pool.read_text())
+
+        self.assertTrue(on_disk[0]["used"])
+        self.assertEqual(result["parameters"].get("source"), "forge")
+
+
+# ---------------------------------------------------------------------------
 # taxonomy.classify works with forge parameters
 # ---------------------------------------------------------------------------
 
