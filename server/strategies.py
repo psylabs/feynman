@@ -327,8 +327,7 @@ def strat_split_round_friendly(p, expected):
     if not _money_ok(share, expected):
         return None
     nudge = "" if friendly == total else f" nudge to ${_fmt(friendly)} (a multiple of {people}) →"
-    return (f"${_fmt(total)} ÷ {people}:{nudge} ${_fmt(share)} each"
-            f"{'' if friendly == total else ' — inside the $1/1% tolerance'}.")
+    return f"${_fmt(total)} ÷ {people}:{nudge} ${_fmt(share)} each."
 
 
 def strat_round_then_total(p, expected):
@@ -341,12 +340,12 @@ def strat_round_then_total(p, expected):
     if not _money_ok(est, expected):
         return None
     parts = " + ".join(str(r) for r in rounded)
-    return (f"Round each to whole dollars first: {parts} = {est} (exact "
-            f"{_fmt(expected)}, inside tolerance). Never add cents in your head.")
+    return (f"Round each to whole dollars first: {parts} = {est}. "
+            f"Never add cents in your head.")
 
 
 def strat_round_both_subtract(p, expected):
-    """category_difference: round both to the nearest ten, subtract left to right."""
+    """category_difference: round if the amounts are messy, subtract left to right."""
     x, y = p.get("amount_a"), p.get("amount_b")
     if x is None or y is None:
         return None
@@ -355,9 +354,19 @@ def strat_round_both_subtract(p, expected):
     est = rh - rl
     if not _money_ok(est, expected):
         return None
-    return (f"{_fmt(hi)}-{_fmt(lo)}: drop cents, round to tens → {_fmt(rh)}-{_fmt(rl)}. "
-            f"Then it's just {_fmt(rh / 10)}-{_fmt(rl / 10)} tens = {_fmt(est)} "
-            f"(exact {_fmt(expected)}, inside the $1/1% tolerance).")
+    # Walk the (rounded) subtraction left to right: peel hundreds off the
+    # subtrahend, then the rest. Only mention rounding when it changed anything.
+    hundreds = int(rl // 100) * 100
+    rest = rl - hundreds
+    step1 = rh - hundreds
+    assert step1 - rest == est
+    if hundreds and rest:
+        walk = f"{_fmt(rh)}−{_fmt(hundreds)}={_fmt(step1)}, then −{_fmt(rest)} → {_fmt(est)}"
+    else:
+        walk = f"{_fmt(rh)}−{_fmt(rl)}={_fmt(est)}"
+    if rh == hi and rl == lo:
+        return f"{_fmt(hi)}−{_fmt(lo)}: {walk}."
+    return f"{_fmt(hi)}−{_fmt(lo)}: call it {_fmt(rh)}−{_fmt(rl)}. {walk}."
 
 
 # ----------------------------------------------------------- weather

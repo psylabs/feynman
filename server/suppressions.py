@@ -95,6 +95,18 @@ def _small_operand(skill_id: str, params: dict) -> bool:
     return _f(params).get("min_operand", float("inf")) <= 2
 
 
+@rule("eleven_times_small")
+def _eleven_times_small(skill_id: str, params: dict) -> bool:
+    """11 x single-digit is a digit-doubling trick, not recall practice.
+
+    User rule (2026-07-02): for the x11 table, only 11x10 and up count.
+    11x11 and 11x12 have min_operand == 11, so they survive.
+    """
+    f = _f(params)
+    m, M = f.get("min_operand"), f.get("max_operand")
+    return M == 11 and m is not None and m < 10
+
+
 # ---- loader ---------------------------------------------------------------
 
 _active_cache: dict[str, list[str]] | None = None

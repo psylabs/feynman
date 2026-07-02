@@ -52,7 +52,7 @@ TRIGGER = [
     ("round_then_total", "money_arithmetic",
      {"operation": "charge_total", "amounts": [21, 34, 18]}, 73.0, "whole dollars"),
     ("round_both_subtract", "money_arithmetic",
-     {"operation": "category_difference", "amount_a": 210, "amount_b": 140}, 70.0, "round to tens"),
+     {"operation": "category_difference", "amount_a": 210, "amount_b": 140}, 70.0, "then −40 → 70"),
     # weather (exact)
     ("f_to_c", "weather_math",
      {"operation": "f_to_c_approx", "fahrenheit": 72}, 21.0, "halve"),

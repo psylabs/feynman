@@ -203,10 +203,18 @@ def build_session_plan(
     stats = family_stats.family_stats(attempts)
 
     # 2. One bootstrap slot per session while any foundation family is untested.
+    #    The pinned first-look fact must respect exclusions/cooldowns like every
+    #    other lane (a bootstrap roll of an excluded fact was how trivial x11
+    #    problems leaked past the 2026-07-02 recalibration).
     if len(slots) < length:
         fam = _pick_bootstrap_family(stats)
         if fam is not None:
-            slots.append(_bootstrap_slot(fam, attempts, skill_targets))
+            blocked = excluded | cooldown
+            for _ in range(8):
+                slot = _bootstrap_slot(fam, attempts, skill_targets)
+                if slot["fact_key"] not in blocked:
+                    slots.append(slot)
+                    break
 
     # 3. Weak-family drills fill the rest (weak_families order, round-robin).
     #    excluded_keys always wins; cooldown/recency also blocked (no overdue bypass

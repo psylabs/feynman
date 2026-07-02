@@ -206,9 +206,12 @@ def _gen_multiplication(level: int, target: dict | None = None) -> dict:
         a, b = int(target["a"]), int(target["b"])
     else:
         if level == 1:
-            easy_factors = [2, 5, 10, 11]
+            # 2/10/11-with-small-cofactor are suppressed (2026-07-02 rules);
+            # keeping them here just burned the suppression retry budget and
+            # let the give-up path emit trivial facts. L1 = easiest legit tables.
+            easy_factors = [3, 4, 5]
             a = random.choice(easy_factors)
-            b = random.randint(1, 12)
+            b = random.randint(3, 12)
             if random.random() < 0.5:
                 a, b = b, a
         elif level == 2:

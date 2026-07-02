@@ -17,7 +17,8 @@ subtraction:
 
 multiplication:
   - by_ten
-  - small_operand   # x1 and x2 tables are instant recall, not practice
+  - small_operand        # x1 and x2 tables are instant recall, not practice
+  - eleven_times_small   # x11 only counts from 11x10 up
 
 weather_math:
   - trivial_diff
