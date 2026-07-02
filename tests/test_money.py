@@ -116,32 +116,53 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual(problem["expected"], 22.0)
         self.assertEqual(problem["parameters"]["operation"], "category_difference")
 
-    def test_generates_category_share_prompt(self):
+    def test_category_amount_prompt_shape_and_expected(self):
+        # Groceries = $250 (25% of $1000 total); Dining = $750 (75%).
+        # 25% snaps to 25 (0pp error) → ACCEPT; 75% → nearest 50 (25pp) → REJECT.
         rows = [
-            {"date": "2026-01-02", "payee": "A", "category": "Groceries", "amount": 25.00},
-            {"date": "2026-01-10", "payee": "B", "category": "Dining & Drinks:Restaurants", "amount": 75.00},
+            {"date": "2026-01-10", "payee": "A", "category": "Groceries", "amount": 250.00},
+            {"date": "2026-01-15", "payee": "B", "category": "Dining", "amount": 750.00},
         ]
 
-        problem = money.generate_problem(rows, target={"operation": "category_share"})
+        problem = money.generate_problem(rows, target={"operation": "category_amount"})
 
         self.assertIn("January 2026", problem["prompt"])
-        self.assertIn("Restaurants", problem["prompt"])
-        self.assertNotIn("Dining & Drinks:Restaurants", problem["prompt"])
-        self.assertIn("$100", problem["prompt"])
-        self.assertNotIn("$100.00", problem["prompt"])
-        self.assertEqual(problem["expected"], 75.0)
-        self.assertEqual(problem["parameters"]["operation"], "category_share")
+        self.assertIn("25%", problem["prompt"])
+        self.assertIn("$1,000", problem["prompt"])
+        self.assertIn("Groceries", problem["prompt"])
+        self.assertIn("About how much is that?", problem["prompt"])
+        # expected = swag(1000) * 25 / 100 = 1000 * 25 / 100 = 250
+        self.assertEqual(problem["expected"], 250.0)
+        self.assertEqual(problem["parameters"]["operation"], "category_amount")
 
-    def test_category_prompts_avoid_large_fixed_categories(self):
+    def test_category_amount_falls_back_when_no_friendly_snap(self):
+        # Groceries = 35% (nearest friendly: 30 or 40, both 5pp away → REJECT).
+        # Dining = 65% (nearest friendly: 50, 15pp away → REJECT).
+        # After 10 tries with only these two categories, falls back to charge_total.
         rows = [
-            {"date": "2026-01-01", "payee": "Mortgage", "category": "Home:Mortgage", "amount": 5350.00},
-            {"date": "2026-01-02", "payee": "A", "category": "Groceries", "amount": 25.00},
-            {"date": "2026-01-10", "payee": "B", "category": "Dining & Drinks:Restaurants", "amount": 75.00},
+            {"date": "2026-01-10", "payee": "A", "category": "Groceries", "amount": 35.00},
+            {"date": "2026-01-15", "payee": "B", "category": "Dining", "amount": 65.00},
         ]
 
-        problem = money.generate_problem(rows, target={"operation": "category_share"})
+        problem = money.generate_problem(rows, target={"operation": "category_amount"})
 
-        self.assertNotIn("Home:Mortgage", problem["prompt"])
+        self.assertNotEqual(problem["parameters"]["operation"], "category_amount")
+
+    def test_category_amount_parameters(self):
+        # Two equal categories → 50% each → snaps to 50 (0pp error).
+        rows = [
+            {"date": "2026-01-10", "payee": "A", "category": "Groceries", "amount": 500.00},
+            {"date": "2026-01-15", "payee": "B", "category": "Dining", "amount": 500.00},
+        ]
+
+        problem = money.generate_problem(rows, target={"operation": "category_amount"})
+
+        params = problem["parameters"]
+        self.assertEqual(params["operation"], "category_amount")
+        self.assertEqual(params["percentage"], 50)
+        self.assertEqual(params["total"], 1000)
+        self.assertIn("category", params)
+        self.assertIn("month", params)
 
     def test_money_attempts_key_by_operation(self):
         key = diagnosis.fact_key("money_arithmetic", {"operation": "category_difference"})
@@ -164,9 +185,9 @@ class MoneyTests(unittest.TestCase):
         self.assertIsInstance(problem["expected"], float)
 
     def test_scheduler_converts_money_fact_key_to_target_operation(self):
-        target = scheduler._fact_key_to_target("money:category_share")
+        target = scheduler._fact_key_to_target("money:category_amount")
 
-        self.assertEqual(target, {"operation": "category_share"})
+        self.assertEqual(target, {"operation": "category_amount"})
 
 
 if __name__ == "__main__":

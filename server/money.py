@@ -22,6 +22,7 @@ ROOT = Path(__file__).parent.parent
 DEFAULT_CSV = ROOT / "data" / "transactions.csv"
 PLAID_ENV = "FEYNMAN_PLAID_LATEST_JSON"
 RECENT_WINDOW_DAYS = 7
+FRIENDLY_PCTS = (10, 15, 20, 25, 30, 40, 50)
 EXCLUDED_PRACTICE_PREFIXES = (
     "Home:",
     "Taxes:",
@@ -139,8 +140,8 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
         return _charge_total(rows)
     if operation == "category_difference":
         return _category_difference(rows)
-    if operation == "category_share":
-        return _category_share(rows)
+    if operation == "category_amount":
+        return _category_amount(rows, level=(target or {}).get("level"))
     return _charge_total(rows)
 
 
@@ -335,32 +336,61 @@ def _category_difference(rows: list[dict]) -> dict:
     }
 
 
-def _category_share(rows: list[dict]) -> dict:
+def _snap_pct(true_pct: float) -> int | None:
+    """Snap true_pct to the nearest friendly percent; return None if >4pp away."""
+    best = min(FRIENDLY_PCTS, key=lambda p: abs(p - true_pct))
+    if abs(best - true_pct) <= 4:
+        return best
+    return None
+
+
+def _category_amount(rows: list[dict], level=None) -> dict:
+    """Ask how many dollars a friendly-percent slice of monthly spend amounts to.
+
+    Picks a (month, category) pair whose true share snaps within 4 percentage
+    points of a friendly percent (10/15/20/25/30/40/50). Falls back to
+    _charge_total if no qualifying candidate is found in 10 tries.
+    """
     practice_rows = _practice_rows(rows)
-    month, month_rows = _pick_month(practice_rows)
-    totals = _category_totals(month_rows)
-    if len(totals) < 2:
-        return _charge_total(rows)
-    total_swag = _swag(sum(totals.values()))
-    category, amount = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[0]
-    amount_swag = _swag(amount)
-    pct = round(amount_swag / total_swag * 100) if total_swag else 0
-    label = _category_leaf(category)
-    return {
-        "prompt": (
-            f"In {_month_label(month)}, {label} was about ${amount_swag:,} out of ${total_swag:,} "
-            "in tracked expenses. About what percent?"
-        ),
-        "expected": float(pct),
-        "parameters": {
-            "operation": "category_share",
-            "source": "transactions.csv",
-            "month": month,
-            "category": category,
-            "category_amount": amount_swag,
-            "total_amount": total_swag,
-        },
-    }
+    tries = 0
+    while tries < 10:
+        month, month_rows = _pick_month(practice_rows)
+        totals = _category_totals(month_rows)
+        if not totals:
+            tries += 1
+            continue
+        month_total = sum(totals.values())
+        if month_total <= 0:
+            tries += 1
+            continue
+        total_swag = _swag(month_total)
+        candidates = list(totals.items())
+        random.shuffle(candidates)
+        for category, amount in candidates:
+            tries += 1
+            true_pct = amount / month_total * 100
+            pct = _snap_pct(true_pct)
+            if pct is not None:
+                label = _category_leaf(category)
+                expected = total_swag * pct / 100
+                return {
+                    "prompt": (
+                        f"In {_month_label(month)}, about {pct}% of your "
+                        f"${total_swag:,} spend was {label}. About how much is that?"
+                    ),
+                    "expected": float(expected),
+                    "parameters": {
+                        "operation": "category_amount",
+                        "percentage": pct,
+                        "total": total_swag,
+                        "category": category,
+                        "month": month,
+                        "level": level,
+                    },
+                }
+            if tries >= 10:
+                break
+    return _charge_total(rows)
 
 
 def _category_totals(rows: list[dict]) -> dict[str, float]:
@@ -407,7 +437,7 @@ def _fallback_problem() -> dict:
     return {
         "prompt": "What is 20 percent of 50?",
         "expected": 10.0,
-        "parameters": {"operation": "category_share", "source": "fallback"},
+        "parameters": {"operation": "charge_total", "source": "fallback"},
     }
 
 
