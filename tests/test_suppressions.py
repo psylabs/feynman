@@ -1,3 +1,5 @@
+import os
+import time
 import unittest
 from server import generator
 from server import suppressions
@@ -73,3 +75,17 @@ class SuppressionRuleTests(unittest.TestCase):
             result = generator.generate("subtraction")
             b = result["parameters"]["b"]
             self.assertGreater(b, 2, f"b={b} should be suppressed")
+
+
+def test_load_active_reloads_on_mtime_change(tmp_path, monkeypatch):
+    yaml_path = tmp_path / "suppressions.yaml"
+    yaml_path.write_text("addition: [by_ten]\n")
+    monkeypatch.setattr(suppressions, "_YAML_PATH", yaml_path)
+    suppressions._active_cache = None  # reset module cache
+    suppressions._cache_mtime = None   # reset mtime cache
+    first = suppressions.load_active()
+    assert first == {"addition": ["by_ten"]}
+    yaml_path.write_text("addition: [by_ten, small_operand]\n")
+    os.utime(yaml_path, (time.time() + 5, time.time() + 5))  # force mtime forward
+    second = suppressions.load_active()
+    assert second == {"addition": ["by_ten", "small_operand"]}

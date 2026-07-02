@@ -8,9 +8,12 @@ Returns:
     {"prompt": str, "expected": float, "parameters": dict}
 """
 
+import logging
 import random
 
 from server import money, suppressions, weather
+
+_log = logging.getLogger("feynman.suppressions")
 
 
 def _compute_features(a: int, b: int, *, extra: dict | None = None) -> dict:
@@ -341,4 +344,7 @@ def generate(
         result = fn(level, None)
         if not suppressions.matches(skill_id, result.get("parameters", {}), active):
             return result
+    _log.warning(
+        "suppression.give_up skill_id=%s retries=%d", skill_id, suppressions.MAX_RETRIES
+    )
     return result

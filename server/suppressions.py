@@ -91,18 +91,23 @@ def _small_operand(skill_id: str, params: dict) -> bool:
 # ---- loader ---------------------------------------------------------------
 
 _active_cache: dict[str, list[str]] | None = None
+_cache_mtime: float | None = None
 
 
 def load_active(force: bool = False) -> dict[str, list[str]]:
     """Read ``suppressions.yaml`` into ``{skill_id: [rule_name, ...]}``.
 
-    Cached after the first call; pass ``force=True`` to re-read from disk.
+    Cached; automatically re-reads when the file's mtime changes so rule
+    edits take effect without restarting the server. Pass ``force=True`` to
+    unconditionally re-read from disk.
     """
-    global _active_cache
-    if _active_cache is not None and not force:
-        return _active_cache
+    global _active_cache, _cache_mtime
     if not _YAML_PATH.exists():
         _active_cache = {}
+        _cache_mtime = None
+        return _active_cache
+    current_mtime = _YAML_PATH.stat().st_mtime
+    if _active_cache is not None and not force and current_mtime == _cache_mtime:
         return _active_cache
     with _YAML_PATH.open() as f:
         data = yaml.safe_load(f) or {}
@@ -112,6 +117,7 @@ def load_active(force: bool = False) -> dict[str, list[str]]:
             continue
         cleaned[sid] = [n for n in names if n in REGISTRY]
     _active_cache = cleaned
+    _cache_mtime = current_mtime
     return cleaned
 
 

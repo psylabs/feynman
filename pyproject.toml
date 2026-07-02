@@ -21,3 +21,8 @@ docs = ["pdoc>=14", "markdown>=3.6"]
 
 [tool.setuptools]
 packages = ["server", "tools"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
