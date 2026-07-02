@@ -18,7 +18,7 @@ from tools.template_forge import run, _validate, _candidate_id, main
 # Canned candidates
 # ---------------------------------------------------------------------------
 # 1. Valid: op in OPS, args compute, numbers in prompt are in args, valid
-#    operation, prompt ≤180 chars ends with ?, not duplicate.
+#    operation, prompt ≤100 chars ends with ?, not duplicate.
 VALID = {
     "prompt": "You spent $120 at Chipotle. What is 15 percent of that?",
     "skill_id": "money_arithmetic",
@@ -111,8 +111,9 @@ class TestValidate(unittest.TestCase):
         )
 
     def test_prompt_too_long_rejected(self):
+        """Prompts over 100 chars (new cap, was 180) must be rejected."""
         cand = dict(VALID)
-        cand["prompt"] = "A" * 181 + "?"
+        cand["prompt"] = "A" * 100 + "?"  # 101 chars > 100
         reasons = _validate(cand, set())
         self.assertTrue(any("prompt_too_long" in r for r in reasons))
 
@@ -188,9 +189,9 @@ class TestValidate(unittest.TestCase):
         self.assertTrue(any("1250" in r for r in reasons))
 
     def test_comma_formatted_number_accepted(self):
-        """Prompt with $1,250 in args should be accepted."""
+        """Prompt with $1,250 in args should be accepted (comma normalization)."""
         cand = {
-            "prompt": "You spent $1,250 at X. What is half?",
+            "prompt": "You spent $1,250 at X. Split 2 ways — each share?",
             "skill_id": "money_arithmetic",
             "operation": "charge_total",
             "op": "div",
@@ -199,6 +200,190 @@ class TestValidate(unittest.TestCase):
         }
         reasons = _validate(cand, set())
         self.assertEqual(reasons, [], f"Expected no rejection for comma-formatted number, got: {reasons}")
+
+    # -----------------------------------------------------------------------
+    # New tests: one per new rejection reason (§2 of task-6.1 spec)
+    # -----------------------------------------------------------------------
+
+    def test_numberless_prompt_rejected(self):
+        """Prompt with zero numbers fails too_few_numbers (and args_not_in_prompt).
+        Models the real failure: 'What is the total amount spent on transportation yesterday?'"""
+        cand = {
+            "prompt": "What is the total amount spent on transportation yesterday?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "delta",
+            "args": [36, 22],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("too_few_numbers" in r for r in reasons),
+            f"Expected too_few_numbers, got: {reasons}",
+        )
+        # All args must also be flagged as absent from the prompt
+        self.assertTrue(
+            any("args_not_in_prompt" in r for r in reasons),
+            f"Expected args_not_in_prompt, got: {reasons}",
+        )
+
+    def test_div_not_integer_rejected(self):
+        """Division that yields a non-integer result must be rejected.
+        Models the real failure: $36 / $14 ≈ 2.57."""
+        cand = {
+            "prompt": "Amazon $36, entertainment $14. What's the ratio?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "div",
+            "args": [36, 14],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("div_not_integer" in r for r in reasons),
+            f"Expected div_not_integer, got: {reasons}",
+        )
+
+    def test_sub_negative_rejected(self):
+        """Subtraction producing a negative result must be rejected.
+        Models the real failure: $14 − $22 = −$8."""
+        cand = {
+            "prompt": "Entertainment $14, Amazon $22. What's the difference?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "sub",
+            "args": [14, 22],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("sub_negative" in r for r in reasons),
+            f"Expected sub_negative, got: {reasons}",
+        )
+
+    def test_domain_mix_dollar_in_weather_rejected(self):
+        """weather_math prompt containing '$' must be rejected.
+        Models the real failure: money amounts injected into a weather question."""
+        cand = {
+            "prompt": "High $89, low $72. What's the range?",
+            "skill_id": "weather_math",
+            "operation": "daily_range",
+            "op": "delta",
+            "args": [89, 72],
+            "source": "open-meteo",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("domain_mix" in r for r in reasons),
+            f"Expected domain_mix, got: {reasons}",
+        )
+
+    def test_args_not_in_prompt_rejected(self):
+        """An arg that does not appear as a number in the prompt must be rejected."""
+        cand = {
+            "prompt": "You spent $120 at Chipotle. What is 15 percent of that?",
+            "skill_id": "money_arithmetic",
+            "operation": "restaurant_tip_15",
+            "op": "pct_of",
+            "args": [15, 999],   # 999 is not in the prompt
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("args_not_in_prompt" in r for r in reasons),
+            f"Expected args_not_in_prompt, got: {reasons}",
+        )
+        self.assertTrue(any("999" in r for r in reasons))
+
+    def test_args_not_in_context_rejected(self):
+        """Args that are not a subset of the context numbers for their skill must be rejected."""
+        cand = {
+            "prompt": "Amazon $36, PRO $22. What's the difference?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "delta",
+            "args": [36, 22],
+            "source": "test",
+        }
+        # Context only contains {50, 75} — neither 36 nor 22 appears in it
+        context_numbers = {"money_arithmetic": {50.0, 75.0}, "weather_math": set()}
+        reasons = _validate(cand, set(), context_numbers)
+        self.assertTrue(
+            any("args_not_in_context" in r for r in reasons),
+            f"Expected args_not_in_context, got: {reasons}",
+        )
+
+    def test_args_in_context_accepted(self):
+        """When args are in context, context grounding check passes."""
+        cand = {
+            "prompt": "Amazon $36, PRO $22. What's the difference?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_difference",
+            "op": "delta",
+            "args": [36, 22],
+            "source": "test",
+        }
+        context_numbers = {"money_arithmetic": {36.0, 22.0, 50.0}, "weather_math": set()}
+        reasons = _validate(cand, set(), context_numbers)
+        self.assertFalse(
+            any("args_not_in_context" in r for r in reasons),
+            f"Did not expect args_not_in_context, got: {reasons}",
+        )
+
+    def test_context_check_skipped_when_none(self):
+        """When context_numbers is None (default), context grounding is skipped."""
+        cand = dict(VALID)
+        # No context_numbers passed → check skipped → VALID accepted
+        reasons = _validate(cand, set(), context_numbers=None)
+        self.assertEqual(reasons, [], f"Expected no rejection without context, got: {reasons}")
+
+    def test_pct_unfriendly_rejected(self):
+        """pct_of with a non-friendly percent must be rejected."""
+        cand = {
+            "prompt": "Open Source $15, total $36. About how much is 41 percent?",
+            "skill_id": "money_arithmetic",
+            "operation": "category_amount",
+            "op": "pct_of",
+            "args": [41, 36],   # 41 is not in FRIENDLY_PCTS
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("pct_unfriendly" in r for r in reasons),
+            f"Expected pct_unfriendly, got: {reasons}",
+        )
+
+    def test_too_many_addends_rejected(self):
+        """add_list with more than 4 addends must be rejected."""
+        cand = {
+            "prompt": "Charges: $10, $20, $30, $40, $50. What's the total?",
+            "skill_id": "money_arithmetic",
+            "operation": "charge_total",
+            "op": "add_list",
+            "args": [10, 20, 30, 40, 50],   # 5 addends > 4 max
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("too_many_addends" in r for r in reasons),
+            f"Expected too_many_addends, got: {reasons}",
+        )
+
+    def test_ugly_answer_zero_rejected(self):
+        """delta with equal args (result = 0) must be rejected as ugly_answer."""
+        cand = {
+            "prompt": "High 72, low 72. What's the range?",
+            "skill_id": "weather_math",
+            "operation": "daily_range",
+            "op": "delta",
+            "args": [72, 72],
+            "source": "open-meteo",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any("ugly_answer" in r for r in reasons),
+            f"Expected ugly_answer, got: {reasons}",
+        )
 
 
 class TestRun(unittest.TestCase):
@@ -288,6 +473,42 @@ class TestRun(unittest.TestCase):
         self.assertEqual(id1, id2)
         self.assertEqual(len(id1), 12)
 
+    def test_run_context_numbers_none_skips_context_check(self):
+        """run() with no context_numbers injected skips args_not_in_context."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            pool_path = Path(td) / "pool.json"
+
+            with patch("tools.template_forge._call_llm", return_value=[VALID]), \
+                 patch("tools.template_forge._build_context", return_value=_FAKE_CONTEXT):
+                # context_numbers not passed → None → context check skipped
+                accepted, rejected = run(n=1, pool_path=pool_path)
+
+        self.assertEqual(len(accepted), 1, f"Expected 1 accepted, got: {rejected}")
+
+    def test_run_context_numbers_injected_rejects_out_of_context(self):
+        """run() with injected context_numbers rejects args not in context."""
+        import tempfile
+
+        # VALID has args [15, 120] for skill money_arithmetic
+        # Inject context with only {50, 75} → neither arg is in context
+        context_numbers = {"money_arithmetic": {50.0, 75.0}, "weather_math": set()}
+
+        with tempfile.TemporaryDirectory() as td:
+            pool_path = Path(td) / "pool.json"
+
+            with patch("tools.template_forge._call_llm", return_value=[VALID]), \
+                 patch("tools.template_forge._build_context", return_value=_FAKE_CONTEXT):
+                accepted, rejected = run(
+                    n=1, pool_path=pool_path, context_numbers=context_numbers
+                )
+
+        self.assertEqual(len(accepted), 0, "Expected VALID rejected due to context mismatch")
+        self.assertEqual(len(rejected), 1)
+        reasons = list(rejected.values())[0]
+        self.assertTrue(any("args_not_in_context" in r for r in reasons))
+
 
 class TestMissingApiKey(unittest.TestCase):
     """main() must exit 1 cleanly when OPENAI_API_KEY is absent."""
@@ -325,6 +546,7 @@ class TestDryRun(unittest.TestCase):
             with patch("tools.template_forge.POOL_PATH", pool_path), \
                  patch("tools.template_forge._call_llm", return_value=[VALID]), \
                  patch("tools.template_forge._build_context", return_value=_FAKE_CONTEXT), \
+                 patch("tools.template_forge._build_context_numbers", return_value=None), \
                  patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key"}), \
                  patch("sys.argv", ["template_forge.py", "--dry-run", "--n", "1"]):
                 main()
