@@ -13,26 +13,56 @@ ROLE_LABELS = {
     "retention": "retention",
     "grounded": "real-life",
     "exploration": "exploration",
+    "due": "reviews due",
+    "bootstrap": "first looks",
+    "weak": "weak-spot drills",
 }
+
+# Roles the pre-rewrite scheduler could emit; always initialized in counts so
+# legacy plans (and dict-equality tests against them) keep their exact shape.
+_LEGACY_ROLES = ("theme", "related", "retention", "grounded", "exploration")
+
+# Display order for the mix sentence: rewritten-scheduler roles first, then
+# the legacy ones.
+_MIX_ROLE_ORDER = ("due", "bootstrap", "weak", "theme", "related", "grounded", "retention", "exploration")
 
 
 def plan_summary(slots: list[dict]) -> dict:
     """Summarize a planned drill in user-facing terms."""
     counts = _role_counts(slots)
-    focus_counts = Counter(
-        _display_for_slot(s)
-        for s in slots
-        if s.get("role") == "theme"
-    )
+
+    theme_slots = [s for s in slots if s.get("role") == "theme"]
+    if theme_slots:
+        focus_counts = Counter(_display_for_slot(s) for s in theme_slots)
+    else:
+        # Rewritten scheduler: no theme slots, so derive focus from what the
+        # session is actually clearing/drilling (due reviews + weak spots).
+        dw_slots = [
+            s for s in slots
+            if _base_role(s) in ("due", "weak") and s.get("family")
+        ]
+        focus_counts = Counter(taxonomy.family_display(s["family"]) for s in dw_slots)
     focus = [name for name, _ in focus_counts.most_common(3)]
+
     grounded_skills = sorted({
-        s.get("skill_id") for s in slots if s.get("role") == "grounded"
+        s.get("skill_id") for s in slots
+        if s.get("role") == "grounded" or (s.get("role") or "").endswith("+skin")
     } - {None})
+
+    bootstrap_families = list(dict.fromkeys(
+        taxonomy.family_display(s["family"])
+        for s in slots
+        if _base_role(s) == "bootstrap" and s.get("family")
+    ))
+
     return {
         "focus": focus,
         "counts": counts,
         "grounded_skills": grounded_skills,
-        "intent": _intent_sentence(focus, counts.get("grounded", 0), grounded_skills),
+        "intent": _intent_sentence(
+            focus, counts, grounded_skills, bootstrap_families,
+            has_theme=bool(theme_slots),
+        ),
         "mix": _mix_sentence(counts),
     }
 
@@ -205,12 +235,22 @@ def _session_stratification(attempts: list[dict]) -> list[dict]:
     return result
 
 
+def _base_role(slot: dict) -> str:
+    """A slot's role with any '+skin' suffix stripped (e.g. 'weak+skin' -> 'weak')."""
+    return (slot.get("role") or "").split("+", 1)[0]
+
+
 def _role_counts(slots: list[dict]) -> dict[str, int]:
-    counts = {role: 0 for role in ROLE_LABELS}
+    counts = {role: 0 for role in _LEGACY_ROLES}
     for slot in slots:
-        role = slot.get("role")
-        if role in counts:
-            counts[role] += 1
+        role = slot.get("role") or ""
+        base = role.split("+", 1)[0]
+        if base in ROLE_LABELS:
+            counts[base] = counts.get(base, 0) + 1
+        # Skinned slots render as money/weather problems, so they also count
+        # toward the "grounded" display bucket (in addition to their base role).
+        if role.endswith("+skin") and base != "grounded":
+            counts["grounded"] = counts.get("grounded", 0) + 1
     return counts
 
 
@@ -224,32 +264,62 @@ _GROUNDED_LABEL = {
 }
 
 
-def _intent_sentence(focus: list[str], grounded_count: int = 0, grounded_skills: list[str] | None = None) -> str:
+def _join_and(items: list[str]) -> str:
+    """Join items as 'a', 'a and b', or 'a, b, and c'."""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _intent_sentence(
+    focus: list[str],
+    counts: dict[str, int],
+    grounded_skills: list[str] | None = None,
+    bootstrap_families: list[str] | None = None,
+    has_theme: bool = False,
+) -> str:
     grounded_skills = grounded_skills or []
+    bootstrap_families = bootstrap_families or []
+    grounded_count = counts.get("grounded", 0)
+    due_count = counts.get("due", 0)
+    weak_count = counts.get("weak", 0)
+
+    lead = ""
+    if has_theme and focus:
+        if len(focus) == 1:
+            lead = f"This session is mainly drilling {focus[0]}."
+        else:
+            lead = f"This session is mainly drilling {', '.join(focus[:-1])}, and {focus[-1]}."
+    elif not has_theme and (due_count or weak_count):
+        head = "mainly clearing overdue reviews" if due_count >= weak_count else "mainly drilling weak spots"
+        body = f"This session is {head}"
+        if focus:
+            body += f": {', '.join(focus)}"
+        if bootstrap_families:
+            body += f", plus a first look at {_join_and(bootstrap_families)}"
+        lead = body + "."
+    elif not has_theme and bootstrap_families:
+        lead = f"This session is mainly a first look at {_join_and(bootstrap_families)}."
+
     grounded_phrase = ""
     if grounded_count:
         labels = [_GROUNDED_LABEL.get(s, s.replace("_", " ")) for s in grounded_skills]
-        if len(labels) == 1:
-            source = labels[0]
-        elif len(labels) == 2:
-            source = f"{labels[0]} and {labels[1]}"
-        else:
-            source = ", ".join(labels[:-1]) + f", and {labels[-1]}"
-        grounded_phrase = f" Plus {grounded_count} real-life drills from your {source}." if focus \
+        source = _join_and(labels)
+        grounded_phrase = f" Plus {grounded_count} real-life drills from your {source}." if lead \
             else f"This session is {grounded_count} real-life drills from your {source}."
 
-    if not focus:
+    if not lead:
         if grounded_phrase:
             return grounded_phrase.strip()
         return "This session is exploratory while the system gathers enough data."
-    if len(focus) == 1:
-        return f"This session is mainly drilling {focus[0]}.{grounded_phrase}"
-    return f"This session is mainly drilling {', '.join(focus[:-1])}, and {focus[-1]}.{grounded_phrase}"
+    return f"{lead}{grounded_phrase}"
 
 
 def _mix_sentence(counts: dict[str, int]) -> str:
     parts = []
-    for role in ("theme", "related", "grounded", "retention", "exploration"):
+    for role in _MIX_ROLE_ORDER:
         n = counts.get(role, 0)
         if n:
             parts.append(f"{n} {ROLE_LABELS[role]}")

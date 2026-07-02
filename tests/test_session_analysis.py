@@ -135,6 +135,81 @@ class SessionAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis["slowest_correct"][1]["fact_key"], "mul:7x7")
 
 
+class RewrittenSchedulerRoleTests(unittest.TestCase):
+    """The rewritten scheduler (server.scheduler.build_session_plan) emits
+    roles 'due'/'bootstrap'/'weak' (optionally '+skin'), not the pre-rewrite
+    'theme'/'related'/'grounded'/'retention'/'exploration'. plan_summary must
+    describe these sessions accurately instead of falling back to the
+    "exploratory" copy."""
+
+    def _slots(self):
+        return [
+            {"role": "due", "skill_id": "multiplication", "fact_key": "mul:12x3",
+             "display": "12 x 3", "family": "mul.x12"},
+            {"role": "due", "skill_id": "multiplication", "fact_key": "mul:12x7",
+             "display": "12 x 7", "family": "mul.x12"},
+            {"role": "due", "skill_id": "subtraction", "fact_key": "sub:15-7",
+             "display": "15 - 7", "family": "sub.within20"},
+            {"role": "due", "skill_id": "subtraction", "fact_key": "sub:13-6",
+             "display": "13 - 6", "family": "sub.within20"},
+            {"role": "bootstrap", "skill_id": "division", "fact_key": "div:16x8",
+             "display": "16 / 8", "family": "div.x8"},
+            {"role": "weak+skin", "skill_id": "money_arithmetic", "fact_key": "money:charge_total",
+             "display": "Money: charge total", "family": "add.2d+2d.n"},
+        ]
+
+    def test_counts_understand_due_bootstrap_weak_and_skins(self):
+        summary = session_analysis.plan_summary(self._slots())
+
+        self.assertEqual(summary["counts"]["due"], 4)
+        self.assertEqual(summary["counts"]["bootstrap"], 1)
+        self.assertEqual(summary["counts"]["weak"], 1)
+        # A '+skin' slot renders as a money/weather problem: it counts once
+        # for its base role (weak) and once toward the grounded display bucket.
+        self.assertEqual(summary["counts"]["grounded"], 1)
+
+    def test_due_majority_session_reads_as_clearing_reviews_not_exploratory(self):
+        summary = session_analysis.plan_summary(self._slots())
+
+        self.assertIn("overdue reviews", summary["intent"])
+        self.assertIn("×12 table", summary["intent"])
+        self.assertIn("first look", summary["intent"])
+        self.assertNotIn("exploratory", summary["intent"])
+
+    def test_mix_sentence_lists_new_role_labels(self):
+        summary = session_analysis.plan_summary(self._slots())
+
+        self.assertIn("4 reviews due, 1 first look", summary["mix"])
+        self.assertIn("1 real-life", summary["mix"])
+
+    def test_weak_majority_session_reads_as_drilling_weak_spots(self):
+        slots = [
+            {"role": "weak", "skill_id": "subtraction", "fact_key": "sub:15-7",
+             "display": "15 - 7", "family": "sub.within20"},
+            {"role": "weak", "skill_id": "subtraction", "fact_key": "sub:13-6",
+             "display": "13 - 6", "family": "sub.within20"},
+            {"role": "due", "skill_id": "multiplication", "fact_key": "mul:12x3",
+             "display": "12 x 3", "family": "mul.x12"},
+        ]
+        summary = session_analysis.plan_summary(slots)
+        self.assertIn("drilling weak spots", summary["intent"])
+
+    def test_only_falls_back_to_exploratory_copy_with_no_recognized_slots(self):
+        summary = session_analysis.plan_summary([])
+        self.assertIn("exploratory", summary["intent"])
+        self.assertEqual(summary["mix"], "Mix: exploratory.")
+
+    def test_legacy_theme_plan_copy_is_unchanged(self):
+        slots = [
+            {"role": "theme", "skill_id": "multiplication", "fact_key": "mul:7x8", "display": "7 x 8"},
+            {"role": "related", "skill_id": "multiplication", "fact_key": "mul:7x7", "display": "7 x 7"},
+        ]
+        summary = session_analysis.plan_summary(slots)
+        self.assertEqual(summary["focus"], ["7 x 8"])
+        self.assertIn("mainly drilling 7 x 8", summary["intent"])
+        self.assertNotIn("overdue reviews", summary["intent"])
+
+
 class PatternAnalysisTests(unittest.TestCase):
     def _attempt(self, skill_id, latency_ms, correct=1, **feature_extra):
         f = {"abs_diff": 5, "min_operand": 3, "max_operand": 8}
