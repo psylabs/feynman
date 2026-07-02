@@ -71,9 +71,16 @@ def _subtract_zero(skill_id: str, params: dict) -> bool:
 
 @rule("by_ten")
 def _by_ten(skill_id: str, params: dict) -> bool:
+    """True when either operand is a nonzero multiple of 10 (10, 20, ...).
+
+    No exceptions: multiplying/dividing by a power-of-ten factor is a shift,
+    not recall practice, regardless of the other operand.
+    """
     f = _f(params)
     m, M = f.get("min_operand"), f.get("max_operand")
-    return m is not None and (m == 10 or M == 10)
+    return (m is not None and m != 0 and m % 10 == 0) or (
+        M is not None and M != 0 and M % 10 == 0
+    )
 
 
 @rule("equal_operands")
