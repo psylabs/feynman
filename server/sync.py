@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 
-def _feedback_payload(payload: dict[str, Any]) -> tuple[int | None, str | None]:
+_VALID_REASON_CODES = frozenset({"too_easy", "too_hard", "seen_too_often", "bad_problem"})
+
+
+def _feedback_payload(payload: dict[str, Any]) -> tuple[int | None, str | None, str | None]:
     thumb = payload.get("thumb")
     if thumb is not None:
         try:
@@ -13,7 +16,8 @@ def _feedback_payload(payload: dict[str, Any]) -> tuple[int | None, str | None]:
         except (TypeError, ValueError):
             thumb = None
     reason = (payload.get("reason") or "").strip() or None
-    return thumb, reason
+    reason_code = payload.get("reason_code") or None
+    return thumb, reason, reason_code
 
 
 def _record_feedback(storage, bus, user_id: str, payload: dict[str, Any]) -> dict:
@@ -33,13 +37,15 @@ def _record_feedback(storage, bus, user_id: str, payload: dict[str, Any]) -> dic
         except (TypeError, ValueError):
             return {"ok": False, "reason": "invalid_attempt_id"}
 
-    thumb, reason = _feedback_payload(payload)
+    thumb, reason, reason_code = _feedback_payload(payload)
     if thumb is not None and thumb not in (1, -1):
         return {"ok": False, "reason": "invalid_thumb"}
-    if thumb is None and not reason:
+    if reason_code is not None and reason_code not in _VALID_REASON_CODES:
+        return {"ok": False, "reason": "invalid_reason_code"}
+    if thumb is None and not reason and not reason_code:
         return {"ok": False, "reason": "thumb_or_reason_required"}
 
-    fid = storage.insert_user_feedback(user_id, session_id, attempt_id, thumb, reason)
+    fid = storage.insert_user_feedback(user_id, session_id, attempt_id, thumb, reason, reason_code)
     bus.emit(
         "feedback.user_submitted",
         id=fid,
@@ -47,6 +53,7 @@ def _record_feedback(storage, bus, user_id: str, payload: dict[str, Any]) -> dic
         attempt_id=attempt_id,
         thumb=thumb,
         has_reason=bool(reason),
+        reason_code=reason_code,
     )
     return {"ok": True, "id": fid}
 

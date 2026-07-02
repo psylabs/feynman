@@ -296,6 +296,38 @@ test("feedback queued after attempt sync is enriched from the stored attempt map
   assert.equal(requests[1].records[0].payload.attempt_id, 55);
 });
 
+test("reason_code chip selection is carried through the offline sync outbox", async () => {
+  const { createFeynmanOfflineController, createFeynmanOfflineStore } = loadOfflineModule();
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), now: () => "2026-06-19T10:00:00.000Z" });
+  const requests = [];
+  const controller = createFeynmanOfflineController({
+    store,
+    fetch: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        json: async () => ({
+          synced: 1,
+          records: [{ local_id: requests.at(-1).body.records[0].local_id, kind: "review_feedback", ok: true }],
+        }),
+      };
+    },
+  });
+
+  await controller.init();
+  await controller.queueFeedback("u1", {
+    session_id: "sess-chip",
+    reason_code: "too_easy",
+  });
+
+  await controller.flushOutbox("u1");
+
+  assert.equal(requests.length, 1);
+  const feedbackPayload = requests[0].body.records[0].payload;
+  assert.equal(feedbackPayload.reason_code, "too_easy");
+  assert.equal(feedbackPayload.thumb, null);
+});
+
 test("typed offline answers build the same attempt shape the server bulk endpoint accepts", () => {
   const { buildOfflineAttempt } = loadOfflineModule();
   const seed = samplePack().items[0];

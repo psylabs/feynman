@@ -100,6 +100,13 @@ class Storage:
             if "answer_mode" not in attempt_cols:
                 conn.execute("ALTER TABLE attempts ADD COLUMN answer_mode TEXT")
 
+            feedback_cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(user_feedback)").fetchall()
+            }
+            if "reason_code" not in feedback_cols:
+                conn.execute("ALTER TABLE user_feedback ADD COLUMN reason_code TEXT")
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS item_state (
@@ -420,13 +427,14 @@ class Storage:
         attempt_id: int | None,
         thumb: int | None,
         reason: str | None,
+        reason_code: str | None = None,
     ) -> int:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO user_feedback "
-                "(user_id, session_id, attempt_id, thumb, reason, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, session_id, attempt_id, thumb, reason, time.time()),
+                "(user_id, session_id, attempt_id, thumb, reason, reason_code, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, session_id, attempt_id, thumb, reason, reason_code, time.time()),
             )
             return int(cur.lastrowid)
 

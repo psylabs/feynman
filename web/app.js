@@ -1390,6 +1390,10 @@
         <span class="fb-prompt">${escapeHtml(x.prompt_text)}</span>
         <button class="fb-thumb" data-thumb="1" aria-label="Thumbs up">👍</button>
         <button class="fb-thumb" data-thumb="-1" aria-label="Thumbs down">👎</button>
+        <button class="fb-chip" data-code="too_easy">too easy</button>
+        <button class="fb-chip" data-code="too_hard">too hard</button>
+        <button class="fb-chip" data-code="seen_too_often">seen too often</button>
+        <button class="fb-chip" data-code="bad_problem">bad problem</button>
         <input type="text" class="fb-reason" placeholder="why? (optional)" maxlength="200">
         <button class="fb-save tiny">save</button>
         <span class="fb-status muted small"></span>
@@ -1415,6 +1419,7 @@
       attempt_client_id: body.attempt_client_id || null,
       thumb: body.thumb == null ? null : body.thumb,
       reason: body.reason || null,
+      reason_code: body.reason_code || null,
     });
     if (status) status.textContent = "queued · syncs online";
     if (isTextSave) {
@@ -1494,6 +1499,21 @@
         attempt_id: aid,
         attempt_client_id: row.dataset.attemptClientId || null,
         thumb: value,
+      });
+      return;
+    }
+    const chip = e.target.closest(".fb-chip");
+    if (chip) {
+      const row = chip.closest(".fb-row");
+      if (!row || !row.dataset.sessionId) return;
+      const code = chip.dataset.code;
+      row.querySelectorAll(".fb-chip").forEach((c) => c.classList.toggle("selected", c === chip));
+      const aid = row.dataset.attemptId ? Number(row.dataset.attemptId) : null;
+      postFeedback(row, {
+        session_id: row.dataset.sessionId,
+        attempt_id: aid,
+        attempt_client_id: row.dataset.attemptClientId || null,
+        reason_code: code,
       });
       return;
     }

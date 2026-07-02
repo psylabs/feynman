@@ -379,6 +379,9 @@ def session_end(payload: dict):
     return orch.end_session(sid)
 
 
+_VALID_REASON_CODES = frozenset({"too_easy", "too_hard", "seen_too_often", "bad_problem"})
+
+
 @app.post("/feedback")
 def post_feedback(payload: dict):
     session_id = payload.get("session_id")
@@ -390,12 +393,15 @@ def post_feedback(payload: dict):
     attempt_id = payload.get("attempt_id")
     thumb = payload.get("thumb")
     reason = (payload.get("reason") or "").strip() or None
+    reason_code = payload.get("reason_code") or None
     if thumb is not None and thumb not in (1, -1):
         raise HTTPException(400, "thumb must be 1 or -1")
-    if thumb is None and not reason:
-        raise HTTPException(400, "thumb or reason required")
+    if reason_code is not None and reason_code not in _VALID_REASON_CODES:
+        raise HTTPException(400, f"unknown reason_code; valid: {', '.join(sorted(_VALID_REASON_CODES))}")
+    if thumb is None and not reason and not reason_code:
+        raise HTTPException(400, "thumb, reason, or reason_code required")
     fid = storage.insert_user_feedback(
-        session["user_id"], session_id, attempt_id, thumb, reason
+        session["user_id"], session_id, attempt_id, thumb, reason, reason_code
     )
     bus.emit(
         "feedback.user_submitted",
@@ -404,6 +410,7 @@ def post_feedback(payload: dict):
         attempt_id=attempt_id,
         thumb=thumb,
         has_reason=bool(reason),
+        reason_code=reason_code,
     )
     return {"id": fid}
 

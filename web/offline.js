@@ -361,6 +361,7 @@
         var payload = Object.assign({}, feedback || {});
         if (payload.reason != null) payload.reason = String(payload.reason || "").trim();
         payload.thumb = payload.thumb == null ? null : Number(payload.thumb);
+        if (payload.reason_code != null) payload.reason_code = String(payload.reason_code);
         return queueSyncRecord(userId, "review_feedback", payload);
       },
 

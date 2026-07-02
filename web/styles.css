@@ -618,6 +618,19 @@ table.leaderboard td { vertical-align: middle; }
 .fb-row .fb-thumb:hover:not(:disabled) { border-color: #3a3d44; }
 .fb-row .fb-thumb.selected { background: #1f2228; border-color: #4a4d54; }
 .fb-row .fb-thumb:disabled { opacity: 0.5; cursor: default; }
+.fb-row .fb-chip {
+  background: transparent;
+  border: 1px solid #2a2d33;
+  color: #888;
+  border-radius: 6px;
+  padding: 3px 7px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.fb-row .fb-chip:hover:not(:disabled) { border-color: #3a3d44; color: inherit; }
+.fb-row .fb-chip.selected { background: #1f2228; border-color: #4a4d54; color: inherit; }
+.fb-row .fb-chip:disabled { opacity: 0.5; cursor: default; }
 .fb-row .fb-reason {
   flex: 1;
   min-width: 120px;
