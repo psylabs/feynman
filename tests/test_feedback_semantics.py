@@ -151,8 +151,12 @@ class TooEasyTests(unittest.TestCase):
         now = time.time()
         _apply(storage, attempt_id=1, reason_code="too_easy")
         state = storage.get_item_state("u1", "mul:6x7")
-        self.assertGreater(state["due_at"], now + 7 * 86400,
-                           "Easy rating should push due_at at least 7 days out")
+        # FSRS fuzzing spreads the Easy interval over ~6-11 days (stability
+        # 8.3d, enable_fuzzing default True), so a 7-day threshold flaked on
+        # ~28% of RNG draws. 5 days is below the fuzz floor and still proves
+        # "long interval".
+        self.assertGreater(state["due_at"], now + 5 * 86400,
+                           "Easy rating should push due_at days out")
 
     def test_too_easy_tier_and_family_match_taxon(self):
         attempt = _make_primitive_attempt()
