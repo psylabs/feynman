@@ -14,82 +14,10 @@ import sqlite3
 import statistics
 from pathlib import Path
 
+from server.taxonomy import classify, family_display, PRIMITIVE_ONSET_TARGET_MS
+
 ROOT = Path(__file__).parent.parent
 DB_PATH = ROOT / "data" / "feynman.db"
-
-# Onset latency (time to start speaking) is the automaticity signal for
-# primitives; resolution latency governs compound procedures.
-PRIMITIVE_ONSET_TARGET_MS = 2000
-MULT_TABLE = set(range(0, 13)) | {15, 20}
-
-
-# ---------------------------------------------------------------- classify
-
-def classify(skill_id: str, params: dict) -> dict | None:
-    """fact_key_v2: return {tier, family, key} or None if unclassifiable.
-
-    tier: 'primitive' (finite recall facts, judged on onset latency)
-          or 'compound' (procedures, judged on resolution latency).
-    family: aggregation grain for assessment (per-fact n is tiny).
-    key: the schedulable item (FSRS unit).
-    """
-    if not params or not isinstance(params, dict):
-        return None
-    a, b = params.get("a"), params.get("b")
-
-    if skill_id == "addition" and a is not None:
-        a, b = int(a), int(b)
-        lo, hi = sorted([a, b])
-        if a + b <= 20:
-            fam = "add.bridge10" if params.get("carry") else "add.within10"
-            return {"tier": "primitive", "family": fam, "key": f"add:{lo}+{hi}"}
-        tag = "c" if params.get("carry") else "n"
-        fam = f"add.multi.{tag}"
-        return {"tier": "compound", "family": fam, "key": f"add:{_dig(lo)}d+{_dig(hi)}d:{tag}"}
-
-    if skill_id == "subtraction" and a is not None:
-        a, b = int(a), int(b)
-        if a <= 20:
-            fam = "sub.borrow20" if params.get("borrow") else "sub.within20"
-            return {"tier": "primitive", "family": fam, "key": f"sub:{a}-{b}"}
-        tag = "b" if params.get("borrow") else "n"
-        fam = f"sub.multi.{tag}"
-        return {"tier": "compound", "family": fam, "key": f"sub:{_dig(a)}d-{_dig(b)}d:{tag}"}
-
-    if skill_id == "multiplication" and a is not None:
-        lo, hi = sorted([int(a), int(b)])
-        if lo in MULT_TABLE and hi in MULT_TABLE:
-            return {"tier": "primitive", "family": f"mul.x{hi}", "key": f"mul:{lo}x{hi}"}
-        return {"tier": "compound", "family": "mul.multi", "key": f"mul:{_dig(lo)}dx{_dig(hi)}d"}
-
-    if skill_id == "division" and a is not None:
-        a, b = int(a), int(b)
-        if b and a % b == 0:
-            q = a // b
-            lo, hi = sorted([b, q])
-            if lo in MULT_TABLE and hi in MULT_TABLE:
-                return {"tier": "primitive", "family": f"div.x{hi}", "key": f"div:{lo}x{hi}"}
-        return {"tier": "compound", "family": "div.multi", "key": "div:other"}
-
-    if skill_id == "percent_of":
-        pct = params.get("percentage")
-        if pct is None:
-            return None
-        return {"tier": "compound", "family": "pct", "key": f"pct:{int(pct)}"}
-
-    if skill_id in ("money_arithmetic", "weather_math"):
-        op = params.get("operation")
-        if not op:
-            return None
-        prefix = "money" if skill_id == "money_arithmetic" else "weather"
-        return {"tier": "compound", "family": f"{prefix}.{op}", "key": f"{prefix}:{op}"}
-
-    return None
-
-
-def _dig(n) -> int:
-    n = abs(int(n))
-    return 1 if n < 10 else 2 if n < 100 else 3
 
 
 # ------------------------------------------------------------- assessment
@@ -99,9 +27,9 @@ def assess(rows: list[sqlite3.Row]) -> dict:
     fams: dict[str, dict] = {}
     for r in rows:
         t = r["taxon"]
-        f = fams.setdefault(t["family"], {"tier": t["tier"], "attempts": [], "keys": {}})
+        f = fams.setdefault(t.family, {"tier": t.tier, "attempts": [], "keys": {}})
         f["attempts"].append(r)
-        f["keys"].setdefault(t["key"], []).append(r)
+        f["keys"].setdefault(t.key, []).append(r)
 
     report = {}
     for fam, f in fams.items():
@@ -321,18 +249,22 @@ def strat_f_to_c(p, expected):
 
 
 STRATEGIES = {
+    # primitives — exact match
     "sub.within20": [strat_count_up, strat_left_to_right_sub],
     "sub.borrow20": [strat_count_up, strat_subtract_in_hops],
-    "sub.multi.n": [strat_left_to_right_sub, strat_count_up],
-    "sub.multi.b": [strat_subtract_in_hops, strat_count_up],
-    "add.within10": [strat_bridge_ten],
+    "add.within20": [strat_bridge_ten],  # no-carry primitives ≤20 (was add.within10)
     "add.bridge10": [strat_bridge_ten, strat_compensation_add],
-    "add.multi.c": [strat_compensation_add, strat_add_tens_then_ones],
-    "add.multi.n": [strat_add_tens_then_ones],
+    # compound add/sub — prefix "add." / "sub." catches all new-style families
+    # (e.g. sub.3d-2d.bt, add.2d+2d.co).  Each strategy fn filters by its own
+    # conditions, so merging the old .n / .b / .c lists is safe.
+    "sub.": [strat_left_to_right_sub, strat_subtract_in_hops, strat_count_up],
+    "add.": [strat_compensation_add, strat_add_tens_then_ones],
+    # multiplication — exact match on table families
     "mul.x9": [strat_times_9, strat_near_square],
     "mul.x12": [strat_times_12, strat_near_square],
     "mul.x10": [strat_times_9],  # 9x10/9x11 misses live here after sorting
     "mul.x11": [strat_times_9, strat_times_12],
+    # money / weather — exact match
     "money.restaurant_tip_15": [strat_tip_15],
     "money.split_bill": [strat_split_round_friendly],
     "money.charge_total": [strat_round_then_total],
@@ -343,9 +275,17 @@ STRATEGIES = {
 
 
 def tips_for(row) -> list[str]:
-    fam = row["taxon"]["family"]
+    fam = row["taxon"].family
+    # Exact match first; then longest prefix key (keys ending with ".").
+    strats = STRATEGIES.get(fam)
+    if strats is None:
+        prefix_keys = [k for k in STRATEGIES if k.endswith(".") and fam.startswith(k)]
+        if prefix_keys:
+            strats = STRATEGIES[max(prefix_keys, key=len)]
+        else:
+            strats = []
     out = []
-    for strat in STRATEGIES.get(fam, []):
+    for strat in strats:
         try:
             tip = strat(row["params"], row["expected_answer"])
         except (AssertionError, TypeError, KeyError, ZeroDivisionError):
@@ -389,7 +329,8 @@ if __name__ == "__main__":
         fams = {k: v for k, v in report.items() if v["tier"] == tier}
         for fam, s in sorted(fams.items(), key=lambda kv: (kv[1]["acc"], -kv[1]["n"])):
             med = f"{s['median_ms']}ms" if s["median_ms"] else "—"
-            line = (f"{fam:28s} n={s['n']:<4d} acc={s['acc']:.2f} med={med:>8s} "
+            line = (f"{fam:28s} ({family_display(fam)}) "
+                    f"n={s['n']:<4d} acc={s['acc']:.2f} med={med:>8s} "
                     f"tgt={s['target_ms']}ms skips={s['skips']} -> {s['verdict']}")
             print(line)
             for key, kn, miss in s["outliers"]:
@@ -401,9 +342,9 @@ if __name__ == "__main__":
     for r in rows:
         if r["skipped"]:
             continue
-        lat_field = ("onset_latency_ms" if r["taxon"]["tier"] == "primitive"
+        lat_field = ("onset_latency_ms" if r["taxon"].tier == "primitive"
                      else "resolution_latency_ms")
-        target = (PRIMITIVE_ONSET_TARGET_MS if r["taxon"]["tier"] == "primitive"
+        target = (PRIMITIVE_ONSET_TARGET_MS if r["taxon"].tier == "primitive"
                   else (r["target_latency_ms"] or 9000))
         wrong = not r["correct"]
         slow = r["correct"] and (r[lat_field] or 0) > target * 1.5
@@ -413,7 +354,7 @@ if __name__ == "__main__":
         if not tips:
             continue
         mode = "WRONG" if wrong else f"SLOW ({r[lat_field]}ms)"
-        print(f"\n[{mode}] {r['prompt_text']}  (key={r['taxon']['key']})")
+        print(f"\n[{mode}] {r['prompt_text']}  (key={r['taxon'].key})")
         for t in tips:
             print(f"   → {t}")
         shown += 1
