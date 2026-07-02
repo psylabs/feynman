@@ -9,13 +9,18 @@
      - contains `frequent`, `repet`, or `just asked` → `seen_too_often`
      - contains `hard` → `too_hard`
      - else → leave NULL, PRINT the row for manual review
-   Rows with thumb only and NO reason text keep NULL reason_code (apply()'s
-   bare-thumb fallback handles them at replay time).
+   Rows with thumb only and NO reason text are replayed once as bare-thumb, then
+   marked with the DB-only sentinel reason_code='thumb_only'.  The sentinel is
+   NOT a valid API reason code — server/main.py and server/sync.py are untouched.
+   Note: feedback_semantics.apply() with reason_code='thumb_only' would fall into
+   its bare-thumb else-branch and misbehave; the replay loop guards against this
+   by skipping apply() for any 'thumb_only' row.
 
 2. **Replay** feedback_semantics.apply() in chronological created_at order for:
    - (default) Only the rows whose reason_code was NULL at script start
      (i.e. rows just coded + bare-thumb rows without a reason).
-   - (--replay-all) Every feedback row regardless of prior state.
+   - (--replay-all) Every feedback row regardless of prior state, including
+     rows already marked 'thumb_only' (apply() is still guarded for them).
 
 ### Stale-cooldown rule
 
@@ -32,10 +37,14 @@ Safe to re-run:
   - Coding step: filtered on `reason_code IS NULL`, so already-coded rows are
     never re-matched or re-updated.
   - Replay step (default, without --replay-all): only replays rows that were
-    NULL at script start.  Re-running the script finds no NULL rows, codes
-    nothing, and replays nothing — a true no-op.
+    NULL at script start.  After the first run, bare-thumb rows are marked
+    'thumb_only' (reason_code no longer NULL), so re-running finds no NULL
+    bare-thumb rows, codes nothing for them, and replays nothing — a true no-op
+    including bare-thumb rows.
   - With --replay-all: Easy re-grades compound on re-run (apply()'s own note
     says as much); use this flag deliberately, not in an automated loop.
+    'thumb_only' sentinel rows are included in the fetch but apply() is not
+    called for them (guarded in the replay loop), so they do not compound.
 
 ### Usage
 
@@ -98,6 +107,8 @@ def main() -> None:
     now = time.time()
 
     # ── 1. Fetch all rows where reason_code IS NULL ──────────────────────────
+    # 'thumb_only' sentinel rows are automatically excluded here since their
+    # reason_code is no longer NULL.
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
@@ -122,7 +133,7 @@ def main() -> None:
     for row in null_rows:
         reason = row["reason"]
         if not reason:
-            # Bare-thumb row — keep NULL; apply() handles it.
+            # Bare-thumb row — will be replayed then marked 'thumb_only'.
             continue
         code = _classify_reason(reason)
         if code is not None:
@@ -154,7 +165,7 @@ def main() -> None:
     if args.replay_all:
         replay_rows = conn.execute(
             """
-            SELECT id, user_id, attempt_id, thumb, reason_code, created_at
+            SELECT id, user_id, attempt_id, thumb, reason, reason_code, created_at
             FROM user_feedback
             ORDER BY created_at ASC
             """
@@ -165,7 +176,7 @@ def main() -> None:
         null_ids = {r["id"] for r in null_rows}
         replay_rows = conn.execute(
             f"""
-            SELECT id, user_id, attempt_id, thumb, reason_code, created_at
+            SELECT id, user_id, attempt_id, thumb, reason, reason_code, created_at
             FROM user_feedback
             WHERE id IN ({','.join('?' for _ in null_ids)})
             ORDER BY created_at ASC
@@ -182,14 +193,26 @@ def main() -> None:
         "seen_too_often": 0,
         "too_hard": 0,
         "bare_thumb": 0,
+        "thumb_only_sentinel": 0,  # already-processed bare-thumb rows; apply() skipped
         "stale_skipped": 0,
         "no_op": 0,  # NULL reason_code + no thumb or thumb=+1
     }
+
+    # IDs of truly bare-thumb rows (rc=None, thumb=-1, no reason text) that were
+    # replayed this run and should be marked with the 'thumb_only' sentinel.
+    bare_thumb_replayed: list[int] = []
 
     for row in replay_rows:
         rc = row["reason_code"]
         thumb = row["thumb"]
         created_at = row["created_at"]
+
+        # 'thumb_only' sentinel: bare-thumb row already processed on a prior run.
+        # apply() with reason_code='thumb_only' would misbehave (falls into the
+        # bare-thumb else-branch); skip it here rather than modifying the module.
+        if rc == "thumb_only":
+            counts["thumb_only_sentinel"] += 1
+            continue
 
         # Stale seen_too_often: skip cooldown entirely.
         if rc == "seen_too_often" and (now - created_at) > _SEVEN_DAYS:
@@ -205,6 +228,9 @@ def main() -> None:
             counts["too_hard"] += 1
         elif rc is None and thumb == -1:
             counts["bare_thumb"] += 1
+            # Collect truly bare-thumb rows (no reason text) for sentinel marking.
+            if not row["reason"]:
+                bare_thumb_replayed.append(row["id"])
         else:
             counts["no_op"] += 1
             # Positive thumb or NULL/NULL → store only; skip apply() call.
@@ -217,6 +243,20 @@ def main() -> None:
             thumb=thumb,
             reason_code=rc,
         )
+
+    # ── 6b. Mark bare-thumb rows with 'thumb_only' sentinel ─────────────────
+    # This prevents them from appearing in null_rows on subsequent default runs,
+    # making re-runs a true no-op for bare-thumb rows.
+    if bare_thumb_replayed:
+        sentinel_conn = sqlite3.connect(DB_PATH)
+        for row_id in bare_thumb_replayed:
+            sentinel_conn.execute(
+                "UPDATE user_feedback SET reason_code = 'thumb_only' WHERE id = ?",
+                (row_id,),
+            )
+        sentinel_conn.commit()
+        sentinel_conn.close()
+        print(f"Marked {len(bare_thumb_replayed)} bare-thumb rows with sentinel 'thumb_only'.")
 
     # ── 7. Summary table ─────────────────────────────────────────────────────
     # Re-read final counts from DB.
@@ -244,6 +284,7 @@ def main() -> None:
     print(f"  seen_too_often      : {counts['seen_too_often']}  (→ cooldown set)")
     print(f"  too_hard            : {counts['too_hard']}  (→ store only, no-op)")
     print(f"  bare_thumb=-1       : {counts['bare_thumb']}  (→ grade Easy if fast+correct)")
+    print(f"  thumb_only (sentinel): {counts['thumb_only_sentinel']}  (→ skipped, already processed)")
     print(f"  stale_skipped       : {counts['stale_skipped']}  (seen_too_often >7d old, cooldown skipped)")
     print(f"  no_op (skipped)     : {counts['no_op']}  (positive thumb / no signal)")
 
