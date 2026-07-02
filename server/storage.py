@@ -128,6 +128,29 @@ class Storage:
                 "CREATE INDEX IF NOT EXISTS idx_item_state_due ON item_state(user_id, due_at)"
             )
 
+            # Task 4.2: cooldown and exclusion tables
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS key_cooldown (
+                  user_id TEXT NOT NULL,
+                  item_key TEXT NOT NULL,
+                  until REAL NOT NULL,
+                  PRIMARY KEY (user_id, item_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS excluded_keys (
+                  user_id TEXT NOT NULL,
+                  item_key TEXT NOT NULL,
+                  reason TEXT,
+                  created_at REAL NOT NULL,
+                  PRIMARY KEY (user_id, item_key)
+                )
+                """
+            )
+
     # ---- users -------------------------------------------------------------
 
     def list_users(self) -> list[dict]:
@@ -690,6 +713,57 @@ class Storage:
                 "SELECT * FROM item_state WHERE user_id = ? AND due_at <= ? "
                 "ORDER BY due_at ASC LIMIT ?",
                 (user_id, now, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- cooldowns and exclusions (Task 4.2) --------------------------------
+
+    def set_key_cooldown(self, user_id: str, item_key: str, until: float) -> None:
+        """Upsert a cooldown for (user_id, item_key) expiring at `until`."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO key_cooldown (user_id, item_key, until) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id, item_key) DO UPDATE SET until = excluded.until",
+                (user_id, item_key, until),
+            )
+
+    def active_cooldowns(self, user_id: str, now: float) -> set[str]:
+        """Item keys whose cooldown has not yet expired (until > now)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT item_key FROM key_cooldown WHERE user_id = ? AND until > ?",
+                (user_id, now),
+            ).fetchall()
+        return {r["item_key"] for r in rows}
+
+    def add_excluded_key(self, user_id: str, item_key: str, reason: str | None) -> None:
+        """Idempotent: insert item_key into the permanent exclusion list."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO excluded_keys (user_id, item_key, reason, created_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(user_id, item_key) DO NOTHING",
+                (user_id, item_key, reason, time.time()),
+            )
+
+    def excluded_keys(self, user_id: str) -> set[str]:
+        """All permanently excluded item keys for this user."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT item_key FROM excluded_keys WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        return {r["item_key"] for r in rows}
+
+    def bad_problem_feedback_for_user(self, user_id: str) -> list[dict]:
+        """All user_feedback rows with reason_code='bad_problem' for this user
+        that have a non-NULL attempt_id.  Volume is tiny; used for distinct-day
+        counting in feedback_semantics."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT attempt_id, created_at FROM user_feedback "
+                "WHERE user_id = ? AND reason_code = 'bad_problem' "
+                "AND attempt_id IS NOT NULL",
+                (user_id,),
             ).fetchall()
         return [dict(r) for r in rows]
 

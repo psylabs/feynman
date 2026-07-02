@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from server import feedback_semantics
 
 _VALID_REASON_CODES = frozenset({"too_easy", "too_hard", "seen_too_often", "bad_problem"})
 
@@ -55,6 +56,7 @@ def _record_feedback(storage, bus, user_id: str, payload: dict[str, Any]) -> dic
         has_reason=bool(reason),
         reason_code=reason_code,
     )
+    feedback_semantics.apply(storage, user_id, attempt_id, thumb, reason_code)
     return {"ok": True, "id": fid}
 
 

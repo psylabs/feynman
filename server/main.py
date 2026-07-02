@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 from server import diagnosis, seed_pack, tts  # noqa: E402
+from server import feedback_semantics  # noqa: E402
 from server.events import EventBus  # noqa: E402
 from server.orchestrator import Orchestrator  # noqa: E402
 from server.storage import Storage  # noqa: E402
@@ -411,6 +412,9 @@ def post_feedback(payload: dict):
         thumb=thumb,
         has_reason=bool(reason),
         reason_code=reason_code,
+    )
+    feedback_semantics.apply(
+        storage, session["user_id"], attempt_id, thumb, reason_code
     )
     return {"id": fid}
 
