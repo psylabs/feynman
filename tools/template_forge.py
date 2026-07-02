@@ -63,6 +63,24 @@ _MAX_EXPECTED: float = 100_000.0
 _PROMPT_MAX_CHARS: int = 100
 _MAX_PER_OP_BATCH: int = 3
 
+# Compatibility table: which compute ops legitimately implement each grounded
+# operation.  The `operation` label keys the FSRS item, so a mislabeled pair
+# (e.g. an addition problem labeled split_bill) pollutes scheduling.
+# f_to_c_approx uses the subtract-then-halve rule ((F - 32) / 2 ≈ C); a single
+# flat op can only express one step, so either step encoding is accepted:
+# "sub" for the F - 32 step or "div" for the halving step.
+_OP_COMPAT: dict[str, frozenset[str]] = {
+    "charge_total":        frozenset({"add_list"}),
+    "category_difference": frozenset({"sub", "delta"}),
+    "split_bill":          frozenset({"div"}),
+    "restaurant_tip_15":   frozenset({"pct_of"}),
+    "category_amount":     frozenset({"pct_of"}),
+    "temp_delta":          frozenset({"sub", "delta"}),
+    "daily_range":         frozenset({"sub", "delta"}),
+    "wind_delta":          frozenset({"sub", "delta"}),
+    "f_to_c_approx":       frozenset({"sub", "div"}),
+}
+
 # ---------------------------------------------------------------------------
 # OpenAI client (lazy singleton, same pattern as server/stt.py)
 # ---------------------------------------------------------------------------
@@ -130,6 +148,10 @@ HARD RULES (the validator enforces every one — violating any causes rejection)
 STYLE: write in the app's natural second-person voice, with recency/day texture —
 start money prompts with "You spent" or a day reference where natural; never list
 bare "LABEL $N, LABEL $N" pairs like a receipt.
+
+DIVERSITY: aim for a mix of operations across the batch — include at least one
+percentage problem (restaurant_tip_15 or category_amount, op=pct_of with a friendly
+percent from {5,10,15,20,25,30,40,50,75}) and at most 3 of any one operation.
 
 GOOD EXAMPLES (complete candidate JSON — short, direct, readable aloud in ~4 seconds;
 note how "operation" is a grounded label while "op" is a compute name):
@@ -313,6 +335,11 @@ def _validate(
     # 10. operation must be a known grounded op
     if operation not in ALL_GROUNDED_OPS:
         reasons.append(f"unknown_operation:{operation!r}")
+    # 10b. (operation, op) pair must be compatible: the operation label keys
+    #      the FSRS item, so e.g. an addition problem labeled split_bill would
+    #      pollute scheduling.  See _OP_COMPAT for the table.
+    elif op not in _OP_COMPAT.get(operation, frozenset()):
+        reasons.append(f"op_operation_mismatch:{operation}/{op}")
 
     # 11. prompt ≤ 100 chars, ends with ?
     if len(prompt) > _PROMPT_MAX_CHARS:

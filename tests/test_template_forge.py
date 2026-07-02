@@ -177,7 +177,7 @@ class TestValidate(unittest.TestCase):
         cand = {
             "prompt": "You spent $1,250 at X. What is half?",
             "skill_id": "money_arithmetic",
-            "operation": "charge_total",
+            "operation": "split_bill",  # div-compatible label (was charge_total)
             "op": "div",
             "args": [625, 2],  # 1250 missing (625 is half, but 1250 not in args)
             "source": "test",
@@ -194,7 +194,7 @@ class TestValidate(unittest.TestCase):
         cand = {
             "prompt": "You spent $1,250 at X. Split 2 ways — each share?",
             "skill_id": "money_arithmetic",
-            "operation": "charge_total",
+            "operation": "split_bill",  # div-compatible label (was charge_total)
             "op": "div",
             "args": [1250, 2],
             "source": "test",
@@ -441,6 +441,50 @@ class TestValidate(unittest.TestCase):
             f"Expected args_not_in_context, got: {reasons}",
         )
         self.assertTrue(any("1000" in r for r in reasons))
+
+    # -----------------------------------------------------------------------
+    # op/operation compatibility table (task-6.1 refine-3)
+    # -----------------------------------------------------------------------
+
+    def test_op_operation_mismatch_rejected(self):
+        """An addition problem labeled split_bill must be rejected — the
+        operation label keys the FSRS item, so mislabels pollute scheduling.
+        Models the live-run failure: 'total' prompts accepted under
+        split_bill accounting."""
+        cand = {
+            "prompt": "You spent $10, $20 and $30 on Monday. What's the total?",
+            "skill_id": "money_arithmetic",
+            "operation": "split_bill",   # wrong label for an add_list problem
+            "op": "add_list",
+            "args": [10, 20, 30],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any(r == "op_operation_mismatch:split_bill/add_list" for r in reasons),
+            f"Expected op_operation_mismatch, got: {reasons}",
+        )
+
+    def test_op_operation_match_accepted(self):
+        """The same addition problem correctly labeled charge_total passes."""
+        cand = {
+            "prompt": "You spent $10, $20 and $30 on Monday. What's the total?",
+            "skill_id": "money_arithmetic",
+            "operation": "charge_total",
+            "op": "add_list",
+            "args": [10, 20, 30],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertEqual(reasons, [], f"Expected no rejection, got: {reasons}")
+
+    def test_op_compat_table_covers_all_grounded_operations(self):
+        """Every grounded operation must have a compat entry, so a new
+        operation can't silently bypass the mismatch check."""
+        self.assertEqual(
+            set(forge._OP_COMPAT), set(forge.ALL_GROUNDED_OPS),
+            "_OP_COMPAT keys must exactly match ALL_GROUNDED_OPS",
+        )
 
     def test_ugly_answer_zero_rejected(self):
         """delta with equal args (result = 0) must be rejected as ugly_answer."""
