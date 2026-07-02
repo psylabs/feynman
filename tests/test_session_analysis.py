@@ -179,8 +179,20 @@ class RewrittenSchedulerRoleTests(unittest.TestCase):
     def test_mix_sentence_lists_new_role_labels(self):
         summary = session_analysis.plan_summary(self._slots())
 
-        self.assertIn("4 reviews due, 1 first look", summary["mix"])
-        self.assertIn("1 real-life", summary["mix"])
+        # 4 due + 1 bootstrap + 1 weak (from weak+skin) + 1 grounded (from weak+skin also counting toward grounded)
+        self.assertEqual(summary["mix"], "Mix: 4 reviews due, 1 first look, 1 weak-spot drill, 1 real-life.")
+
+    def test_mix_sentence_singular_forms(self):
+        """Test singular forms for new roles when count is 1."""
+        slots = [
+            {"role": "due", "skill_id": "multiplication", "fact_key": "mul:12x3",
+             "display": "12 x 3", "family": "mul.x12"},
+            {"role": "weak", "skill_id": "subtraction", "fact_key": "sub:15-7",
+             "display": "15 - 7", "family": "sub.within20"},
+        ]
+        summary = session_analysis.plan_summary(slots)
+
+        self.assertEqual(summary["mix"], "Mix: 1 review due, 1 weak-spot drill.")
 
     def test_weak_majority_session_reads_as_drilling_weak_spots(self):
         slots = [

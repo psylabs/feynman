@@ -7,15 +7,28 @@ from collections import Counter, defaultdict
 from server import diagnosis, strategies, taxonomy
 
 
+# Singular/plural forms for new rewritten-scheduler roles.
+_ROLE_SINGULAR = {
+    "due": "review due",
+    "bootstrap": "first look",
+    "weak": "weak-spot drill",
+}
+
+_ROLE_PLURAL = {
+    "due": "reviews due",
+    "bootstrap": "first looks",
+    "weak": "weak-spot drills",
+}
+
+# Legacy roles use count-invariant adjective labels; new roles get plural forms
+# (singular selected at render time in _mix_sentence).
 ROLE_LABELS = {
     "theme": "focused",
     "related": "related",
     "retention": "retention",
     "grounded": "real-life",
     "exploration": "exploration",
-    "due": "reviews due",
-    "bootstrap": "first looks",
-    "weak": "weak-spot drills",
+    **_ROLE_PLURAL,
 }
 
 # Roles the pre-rewrite scheduler could emit; always initialized in counts so
@@ -322,7 +335,13 @@ def _mix_sentence(counts: dict[str, int]) -> str:
     for role in _MIX_ROLE_ORDER:
         n = counts.get(role, 0)
         if n:
-            parts.append(f"{n} {ROLE_LABELS[role]}")
+            # Select singular or plural form for new roles; legacy roles use
+            # count-invariant adjectives from ROLE_LABELS.
+            if n == 1 and role in _ROLE_SINGULAR:
+                label = _ROLE_SINGULAR[role]
+            else:
+                label = ROLE_LABELS[role]
+            parts.append(f"{n} {label}")
     return "Mix: " + ", ".join(parts) + "." if parts else "Mix: exploratory."
 
 
