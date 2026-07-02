@@ -54,6 +54,38 @@ def _pct_attempts(n=6, pct=15, correct=0, latency=6000, start=200):
     ]
 
 
+def _money_attempts(op="split_bill", n=6, correct=0, latency=6000, start=300):
+    """Attempts classifying to grounded family 'money.<op>' (key 'money:<op>')."""
+    return [
+        {
+            "skill_id": "money_arithmetic",
+            "parameters": {"operation": op, "level": 2},
+            "correct": correct,
+            "skipped": 0,
+            "resolution_latency_ms": latency,
+            "onset_latency_ms": 1000,
+            "created_at": start + i,
+        }
+        for i in range(n)
+    ]
+
+
+def _mul_primitive_attempts(a=7, b=8, n=6, correct=0, latency=6000, start=400):
+    """Attempts classifying to primitive family 'mul.x8' (key 'mul:7x8')."""
+    return [
+        {
+            "skill_id": "multiplication",
+            "parameters": {"a": a, "b": b, "level": 1},
+            "correct": correct,
+            "skipped": 0,
+            "resolution_latency_ms": latency,
+            "onset_latency_ms": latency,
+            "created_at": start + i,
+        }
+        for i in range(n)
+    ]
+
+
 class FakeStorage:
     def __init__(self, skill_ids=None, attempts=None, due=None, counts=None,
                  cooldowns=None, excluded=None):
@@ -399,6 +431,74 @@ class WeakFamilyCooldownTests(unittest.TestCase):
                 "sub.2d-2d.bo", weak_keys,
                 "Recently seen family sub.2d-2d.bo should not be a weak slot",
             )
+
+
+class FamilyNamespaceBlockingTests(unittest.TestCase):
+    """Fix 1: weak lane and skins must honor cooldown/exclusion across the
+    family (money.split_bill) vs item-key (money:split_bill) namespace gap."""
+
+    def test_cooled_down_money_key_not_selected_as_weak_family(self):
+        """A cooled-down 'money:split_bill' must not appear as a weak drill even
+        when 'money.split_bill' is the weakest family (rule b translation)."""
+        storage = FakeStorageWithExclusions(
+            attempts=_money_attempts(op="split_bill"),
+            cooldowns={"money:split_bill"},
+        )
+        for _ in range(20):
+            plan = scheduler.build_session_plan(storage, "u", 6, _noop)
+            keys = [s["fact_key"] for s in plan]
+            self.assertNotIn(
+                "money.split_bill", keys,
+                "Cooled-down money:split_bill leaked into the weak lane",
+            )
+            # The grounded op key must also never be re-created by a skin.
+            self.assertNotIn("money:split_bill", keys)
+
+    def test_excluded_weather_skin_candidate_never_chosen(self):
+        """apply_skins must never render a skin onto an excluded op key. With
+        weather:temp_delta excluded, the sub.2d family falls back to the other
+        weather op (daily_range)."""
+        for _ in range(30):
+            slot = _make_minimal_slot(
+                "subtraction", "sub.2d-2d.bo", "sub.2d-2d.bo", "compound"
+            )
+            slots = [slot]
+            scheduler.apply_skins(slots, 1, excluded={"weather:temp_delta"})
+            if slots[0]["skill_id"] == "weather_math":
+                self.assertEqual(
+                    slots[0]["fact_key"], "weather:daily_range",
+                    "Excluded weather:temp_delta was chosen as a skin",
+                )
+
+    def test_all_weather_skins_excluded_leaves_slot_unskinned(self):
+        """When every candidate op for a skin prefix is excluded, the slot is
+        left alone rather than force-skinned onto a blocked op."""
+        slot = _make_minimal_slot(
+            "subtraction", "sub.2d-2d.bo", "sub.2d-2d.bo", "compound"
+        )
+        slots = [slot]
+        scheduler.apply_skins(
+            slots, 1, excluded={"weather:temp_delta", "weather:daily_range"}
+        )
+        self.assertEqual(slots[0]["skill_id"], "subtraction")
+        self.assertFalse(slots[0]["role"].endswith("+skin"))
+
+    def test_primitive_fact_cooldown_does_not_block_weak_family(self):
+        """Rule d: a cooldown on a single fact (mul:7x8) must NOT block the whole
+        mul.x8 weak family — per-fact cooldowns are due-lane-only."""
+        storage = FakeStorageWithExclusions(
+            attempts=_mul_primitive_attempts(a=7, b=8),
+            cooldowns={"mul:7x8"},
+        )
+        seen = False
+        for _ in range(20):
+            plan = scheduler.build_session_plan(storage, "u", 6, _noop)
+            weak_keys = [s["fact_key"] for s in plan if s["role"].startswith("weak")]
+            if "mul.x8" in weak_keys:
+                seen = True
+        self.assertTrue(
+            seen, "mul.x8 weak drills were wrongly blocked by a mul:7x8 cooldown"
+        )
 
 
 if __name__ == "__main__":

@@ -195,10 +195,12 @@ def build_session_plan(
 
     # 3. Weak-family drills fill the rest (weak_families order, round-robin).
     #    excluded_keys always wins; cooldown/recency also blocked (no overdue bypass
-    #    since weak slots aren't due items).
+    #    since weak slots aren't due items). Families and item keys live in
+    #    different namespaces, so translate via _family_blocked before comparing.
     weak = [
         f for f in family_stats.weak_families(stats, skill_targets, limit=10)
-        if f not in excluded and f not in blocked_unless_overdue
+        if not _family_blocked(f, excluded)
+        and not _family_blocked(f, blocked_unless_overdue)
     ]
     if weak:
         i = 0
@@ -218,7 +220,7 @@ def build_session_plan(
             reason=pick.get("reason", "cold start"),
         ))
 
-    apply_skins(slots, length)
+    apply_skins(slots, length, excluded=excluded, cooldown=cooldown)
     plan = _spread_duplicates_with_alternation(slots)
 
     emit(
@@ -233,12 +235,23 @@ def build_session_plan(
     return plan
 
 
-def apply_skins(slots: list[dict], length: int) -> list[dict]:
+def apply_skins(
+    slots: list[dict],
+    length: int,
+    excluded: set | None = None,
+    cooldown: set | None = None,
+) -> list[dict]:
     """Render eligible slots through grounded generators until the session holds
     ceil(length * HEALTHY_GROUNDED_SHARE) grounded slots (or eligibility runs
     out). A skinned slot keeps ``covers=<original item_key>`` so grading credits
     both the grounded op and the underlying skeleton item. Already-grounded slots
-    are never re-skinned."""
+    are never re-skinned.
+
+    ``excluded``/``cooldown`` are sets of item KEYS (``money:X``/``weather:X``);
+    a skin candidate whose grounded op key falls in either set is skipped. Recent
+    keys are NOT excluded here — skins cover a skeleton that was already
+    recency-checked when its weak/due slot was chosen."""
+    blocked = (excluded or set()) | (cooldown or set())
     target = math.ceil(length * HEALTHY_GROUNDED_SHARE)
     grounded = sum(1 for s in slots if s["skill_id"] in GROUNDED_SKILL_IDS)
     for s in slots:
@@ -252,7 +265,15 @@ def apply_skins(slots: list[dict], length: int) -> list[dict]:
         prefix = next((p for p in SKINS if fam.startswith(p)), None)
         if prefix is None:
             continue
-        skill_id, op = random.choice(SKINS[prefix])
+        candidates = [
+            (skill_id, op)
+            for (skill_id, op) in SKINS[prefix]
+            if f"{'money' if skill_id == 'money_arithmetic' else 'weather'}:{op}"
+            not in blocked
+        ]
+        if not candidates:
+            continue
+        skill_id, op = random.choice(candidates)
         word = "money" if skill_id == "money_arithmetic" else "weather"
         s.update(
             skill_id=skill_id,
@@ -430,6 +451,34 @@ def _target_from_item_key(key: str) -> dict | None:
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+def _family_blocked(family: str, key_set: set) -> bool:
+    """Return True if a weak-lane FAMILY should be blocked, given a set of item
+    KEYS (cooldown / excluded / recent). Families and item keys live in
+    different namespaces (``money.split_bill`` vs ``money:split_bill``,
+    ``pct`` vs ``pct:15``), so a plain ``family in key_set`` test silently misses
+    almost everything — only compound add/sub, where family == key, would match.
+
+    Rules (implemented exactly):
+      a. Exact match: ``family in key_set``. Covers compound add/sub families
+         (family == key) and any family-grain entry such as the literal "pct".
+      b. money./weather. families are single grounded ops (1:1 family<->key):
+         map family -> key by replacing the first "." with ":".
+      c. pct: only a literal "pct" entry blocks the family (handled by rule a).
+         Per-percentage cooldowns (e.g. "pct:15") stay due-lane-only — a cooldown
+         on one percentage must NOT block the whole pct family. Known coarseness.
+      d. Primitive fact families (mul.xN, div.xN, add/sub within-20): rule (a)
+         only. A cooldown on one fact (e.g. "mul:7x8") is honored by the due
+         lane, not by blocking the entire mul.x8 weak family.
+    """
+    if family in key_set:  # rule a (also covers rule c's literal "pct" and rule d)
+        return True
+    if family.startswith("money.") or family.startswith("weather."):  # rule b
+        return family.replace(".", ":", 1) in key_set
+    # Rules c & d: pct:N and per-fact primitive cooldowns are due-lane-only; the
+    # weak lane deliberately does not translate them into family-level blocks.
+    return False
 
 
 def _is_primitive_family(family: str) -> bool:
