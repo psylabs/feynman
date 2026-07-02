@@ -91,22 +91,28 @@ Your output MUST be valid JSON with exactly this structure:
 Each candidate object MUST have these fields:
 - "prompt": str — ≤90 chars, direct second-person voice, one sentence + question, ends with "?"
 - "skill_id": "money_arithmetic" or "weather_math"
-- "operation": str — one of the grounded ops listed below
-- "op": str — one of the forge ops listed below
+- "operation": str — WHICH app problem type this is (grounded label, list below)
+- "op": str — HOW to compute the answer (compute-registry name, list below)
 - "args": array of numbers — the arguments for the chosen op
 - "source": str — short label (e.g. "plaid.latest.json", "open-meteo")
 
-FORGE OPS (the ONLY allowed "op" values):
+"op" and "operation" are two DIFFERENT fields — never swap or conflate them.
+
+"op" = how to compute — the ONLY allowed "op" values (compute registry):
   "sub"      : (a, b) → a - b
   "add_list" : (*xs)  → sum of all args (max 4 addends)
   "pct_of"   : (pct, base) → pct * base / 100
   "div"      : (a, b) → a / b  (must divide evenly — integer result only)
   "delta"    : (a, b) → abs(a - b)
 
-GROUNDED OPS (the ONLY allowed "operation" values):
-  money_arithmetic : restaurant_tip_15 | split_bill | charge_total | \
+"operation" = which app problem type this is — the ONLY allowed "operation" values:
+  for skill_id money_arithmetic : restaurant_tip_15 | split_bill | charge_total | \
 category_difference | category_amount
-  weather_math     : temp_delta | daily_range | f_to_c_approx | wind_delta
+  for skill_id weather_math     : temp_delta | daily_range | f_to_c_approx | wind_delta
+
+Never put a compute name ("sub", "add_list", "pct_of", "div", "delta") in the
+"operation" field — that field takes ONLY the grounded labels above, and the
+"op" field takes ONLY the five compute names.
 
 HARD RULES (the validator enforces every one — violating any causes rejection):
 1. prompt ≤ 90 chars, ends with "?", no filler phrases ("If you...", "What is the total...").
@@ -125,10 +131,17 @@ STYLE: write in the app's natural second-person voice, with recency/day texture 
 start money prompts with "You spent" or a day reference where natural; never list
 bare "LABEL $N, LABEL $N" pairs like a receipt.
 
-GOOD EXAMPLES (short, direct, readable aloud in ~4 seconds):
-✓ "You spent $36 at Amazon and $22 at PRO on Tuesday. What's the difference?" [money, delta, args=[36,22]]
-✓ "You spent $120 at Chipotle on Friday. What's a 15% tip?" [money, pct_of, args=[15,120]]
-✓ "Today's high is 89, low 75. What's the range?" [weather, delta, args=[89,75]]
+GOOD EXAMPLES (complete candidate JSON — short, direct, readable aloud in ~4 seconds;
+note how "operation" is a grounded label while "op" is a compute name):
+✓ {"prompt": "You spent $36 at Amazon and $22 at PRO on Tuesday. What's the difference?",
+   "skill_id": "money_arithmetic", "operation": "category_difference", "op": "delta",
+   "args": [36, 22], "source": "plaid.latest.json"}
+✓ {"prompt": "You spent $120 at Chipotle on Friday. What's a 15% tip?",
+   "skill_id": "money_arithmetic", "operation": "restaurant_tip_15", "op": "pct_of",
+   "args": [15, 120], "source": "plaid.latest.json"}
+✓ {"prompt": "Today's high is 89, low 75. What's the range?",
+   "skill_id": "weather_math", "operation": "daily_range", "op": "delta",
+   "args": [89, 75], "source": "open-meteo"}
 
 BAD EXAMPLES (rejected — do not imitate):
 ✗ "What is the total amount spent on transportation yesterday?" — no numbers, unanswerable
@@ -136,6 +149,8 @@ BAD EXAMPLES (rejected — do not imitate):
 — 36÷14 is not an integer, and the prompt is too verbose
 ✗ "Amazon $36, PRO $22. What's the difference?" — receipt-style bare "LABEL $N, LABEL $N" \
 listing; not natural second-person phrasing (say "You spent $36 at Amazon and $22 at PRO..." instead)
+✗ {"operation": "delta", "op": "delta", ...} — "delta" is a compute name; the "operation" \
+field must be a grounded label like category_difference or daily_range
 """
 
 

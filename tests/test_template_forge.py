@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -456,6 +457,60 @@ class TestValidate(unittest.TestCase):
             any("ugly_answer" in r for r in reasons),
             f"Expected ugly_answer, got: {reasons}",
         )
+
+
+class TestSystemPrompt(unittest.TestCase):
+    """Guard: the system prompt must keep op vs operation disambiguated.
+
+    Regression for the live-run failure where the LLM wrote compute-registry
+    names ("delta", "add_list", "pct_of") into the `operation` field and the
+    whole batch was rejected with unknown_operation.
+    """
+
+    def test_prompt_enumerates_all_compute_ops(self):
+        """Every compute-registry op name must appear (quoted) in the prompt."""
+        from server.forge_ops import OPS
+
+        for op_name in OPS:
+            self.assertIn(
+                f'"{op_name}"', forge._SYSTEM_PROMPT,
+                f"compute op {op_name!r} missing from system prompt",
+            )
+
+    def test_prompt_enumerates_all_grounded_operations(self):
+        """Every grounded operation label must appear in the prompt."""
+        for operation in forge.ALL_GROUNDED_OPS:
+            self.assertIn(
+                operation, forge._SYSTEM_PROMPT,
+                f"grounded operation {operation!r} missing from system prompt",
+            )
+
+    def test_prompt_has_fewshot_with_both_fields(self):
+        """At least one GOOD few-shot example must show BOTH fields as JSON
+        keys, with `operation` holding a grounded label (not a compute name).
+        Only the GOOD section is scanned — the BAD section deliberately shows
+        a conflated {"operation": "delta"} anti-example."""
+        prompt_text = forge._SYSTEM_PROMPT
+        good_start = prompt_text.index("GOOD EXAMPLES")
+        bad_start = prompt_text.index("BAD EXAMPLES")
+        good_section = prompt_text[good_start:bad_start]
+
+        fewshot_re = re.compile(
+            r'"operation":\s*"(?P<operation>[a-z0-9_]+)",\s*"op":\s*"(?P<op>[a-z_]+)"',
+        )
+        matches = list(fewshot_re.finditer(good_section))
+        self.assertTrue(matches, "no GOOD few-shot shows both operation and op fields")
+        from server.forge_ops import OPS
+
+        for m in matches:
+            self.assertIn(
+                m.group("operation"), forge.ALL_GROUNDED_OPS,
+                f"few-shot operation {m.group('operation')!r} is not a grounded label",
+            )
+            self.assertIn(
+                m.group("op"), OPS,
+                f"few-shot op {m.group('op')!r} is not a compute-registry name",
+            )
 
 
 class TestRun(unittest.TestCase):
