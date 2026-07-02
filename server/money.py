@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import random
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+
+from server import forge_ops, forge_pool
+
+logger = logging.getLogger(__name__)
 
 
 ROOT = Path(__file__).parent.parent
@@ -114,6 +119,26 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
         "charge_total",
         "category_difference",
     ])
+    # Try the forge pool first — LLM-generated prompts grounded on real data.
+    entry = forge_pool.take("money_arithmetic", operation)
+    if entry is not None:
+        try:
+            expected = forge_ops.OPS[entry["op"]](*entry["args"])
+            return {
+                "prompt": entry["prompt"],
+                "expected": float(expected),
+                "parameters": {
+                    "operation": entry["operation"],
+                    "source": "forge",
+                    "forge_id": entry["id"],
+                    "level": (target or {}).get("level"),
+                },
+            }
+        except Exception:
+            logger.warning(
+                "forge: malformed pool entry %s skipped (op=%r args=%r)",
+                entry.get("id"), entry.get("op"), entry.get("args"),
+            )
     # Sticky finance staples pull from recent Plaid data (real merchant + day);
     # fall back to the historical CSV only when Plaid is unavailable.
     if operation in ("restaurant_tip_15", "split_bill"):

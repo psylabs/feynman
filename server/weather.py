@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import random
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from server import forge_ops, forge_pool
+
+logger = logging.getLogger(__name__)
 
 
 ROOT = Path(__file__).parent.parent
@@ -74,12 +79,32 @@ def load_forecast(location: dict) -> dict:
 
 
 def generate_problem(target: dict | None = None) -> dict:
-    locations = load_locations()
-    location = random.choice(locations)
-    forecast = load_forecast(location)
     op = (target or {}).get("operation") or random.choice(
         ["temp_delta", "daily_range", "f_to_c_approx", "wind_delta"]
     )
+    # Try the forge pool first — LLM-generated prompts grounded on real data.
+    entry = forge_pool.take("weather_math", op)
+    if entry is not None:
+        try:
+            expected = forge_ops.OPS[entry["op"]](*entry["args"])
+            return {
+                "prompt": entry["prompt"],
+                "expected": float(expected),
+                "parameters": {
+                    "operation": entry["operation"],
+                    "source": "forge",
+                    "forge_id": entry["id"],
+                    "level": (target or {}).get("level"),
+                },
+            }
+        except Exception:
+            logger.warning(
+                "forge: malformed pool entry %s skipped (op=%r args=%r)",
+                entry.get("id"), entry.get("op"), entry.get("args"),
+            )
+    locations = load_locations()
+    location = random.choice(locations)
+    forecast = load_forecast(location)
     if op == "temp_delta":
         return _temp_delta(location, forecast)
     if op == "daily_range":
