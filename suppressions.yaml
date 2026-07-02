@@ -17,6 +17,7 @@ subtraction:
 
 multiplication:
   - by_ten
+  - small_operand   # x1 and x2 tables are instant recall, not practice
 
 weather_math:
   - trivial_diff
