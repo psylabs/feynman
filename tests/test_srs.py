@@ -1,3 +1,4 @@
+import pytest
 from datetime import datetime, timezone, timedelta
 from server import srs
 from fsrs import Rating
@@ -30,3 +31,7 @@ def test_item_state_storage(tmp_path):
     due = st.due_items("u1", now=1500.0)
     assert [d["item_key"] for d in due] == ["sub:18-4"]  # only overdue, sorted
     assert st.get_item_state("u1", "mul:6x7")["due_at"] == 2000.0
+
+def test_review_rejects_naive_datetime():
+    with pytest.raises(ValueError, match="tz-aware"):
+        srs.review(None, Rating.Good, datetime(2026, 7, 1))

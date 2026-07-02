@@ -100,7 +100,7 @@ class Storage:
             if "answer_mode" not in attempt_cols:
                 conn.execute("ALTER TABLE attempts ADD COLUMN answer_mode TEXT")
 
-            conn.executescript(
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS item_state (
                   user_id TEXT NOT NULL,
@@ -114,9 +114,11 @@ class Storage:
                   last_rating INTEGER,
                   updated_at REAL NOT NULL,
                   PRIMARY KEY (user_id, item_key)
-                );
-                CREATE INDEX IF NOT EXISTS idx_item_state_due ON item_state(user_id, due_at);
+                )
                 """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_item_state_due ON item_state(user_id, due_at)"
             )
 
     # ---- users -------------------------------------------------------------

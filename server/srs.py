@@ -21,6 +21,8 @@ def rate(correct: bool, latency_ms: int | None, target_ms: int) -> Rating:
 
 
 def review(card_json: str | None, rating: Rating, when: datetime) -> tuple[str, float]:
+    if when.tzinfo is None:
+        raise ValueError("when must be tz-aware (e.g., datetime.now(timezone.utc))")
     card = Card.from_dict(json.loads(card_json)) if card_json else Card()
     card, _log = _scheduler.review_card(card, rating, when)
     # card.due is already tz-aware (UTC) in fsrs>=5.0, so call .timestamp() directly
