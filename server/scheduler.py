@@ -253,7 +253,7 @@ def _select_diverse_themes(priorities: list[dict], n: int) -> list[dict]:
 _GROUNDED_OPS = {
     # tip + split_bill are enforced as dedicated slots in _build_grounded_slots,
     # so the random fill rotation covers the *other* money problems for variety.
-    "money_arithmetic": ("charge_total", "category_difference", "category_share"),
+    "money_arithmetic": ("charge_total", "category_difference"),
     "weather_math": ("temp_delta", "daily_range", "f_to_c_approx", "wind_delta"),
 }
 

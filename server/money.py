@@ -112,7 +112,6 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
     operation = (target or {}).get("operation") or random.choice([
         "charge_total",
         "category_difference",
-        "category_share",
     ])
     # Sticky finance staples pull from recent Plaid data (real merchant + day);
     # fall back to the historical CSV only when Plaid is unavailable.

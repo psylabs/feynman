@@ -153,6 +153,10 @@ class SchedulerSessionPlanTests(unittest.TestCase):
         split = next(s for s in plan if (s["target_fact"] or {}).get("operation") == "split_bill")
         self.assertEqual(split["target_fact"]["max_party"], scheduler.SPLIT_BILL_ADVANCED_MAX)
 
+    def test_category_share_not_in_grounded_ops(self):
+        """category_share operation should not be schedulable (retired)."""
+        self.assertNotIn("category_share", scheduler._GROUNDED_OPS["money_arithmetic"])
+
 
 if __name__ == "__main__":
     unittest.main()
