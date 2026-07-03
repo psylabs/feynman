@@ -724,6 +724,10 @@
       promptEndTs = Date.now() / 1000;
       $("status").textContent = message;
       showTypedAnswer(false);
+      if (nativeSttReady) {
+        $("btn-ptt").classList.remove("hidden");
+        $("btn-ptt").disabled = false;
+      }
     };
 
     if (!audioSrc) {
@@ -1100,7 +1104,7 @@
     $("btn-next").classList.remove("hidden");
   }
 
-  async function submitTypedAnswer(rawAnswer) {
+  async function submitTypedAnswer(rawAnswer, mode) {
     if (!offlineSession || !offlineQuestion) return;
     rawAnswer = (rawAnswer || "").trim();
     if (!rawAnswer) {
@@ -1116,7 +1120,7 @@
       promptEndTs: promptEndTs || onset,
       onsetTs: onset,
       resolutionTs,
-    });
+    }, mode);
 
     try {
       built.attempt.local_session_id = sessionId;
@@ -1873,8 +1877,40 @@
   $("btn-skip-typed")?.addEventListener("click", () => submitTypedAnswer("skip"));
   $("btn-skip-voice")?.addEventListener("click", () => submitVoiceSkip());
 
-  function pttPress() { startRecording(); }
-  function pttRelease() { stopRecording(); }
+  // Offline on-device speech recognition. Feature-detected: an OTA JS bundle
+  // may ship ahead of the native APK that bundles this plugin, so every use
+  // is guarded and failing to detect it just falls back to typed-only offline
+  // answers (see nextOfflineQuestion's `enable` callback).
+  const Speech = window.Capacitor?.Plugins?.SpeechRecognition || null;
+  let nativeSttReady = false;
+  (async () => { try { nativeSttReady = Speech && (await Speech.available()).available === true; } catch {} })();
+
+  let sttPartial = "", sttFinal = null, sttDone = Promise.resolve();
+  function offlineVoicePress() {
+    sttPartial = ""; sttFinal = null;
+    $("btn-ptt").classList.add("recording"); $("btn-ptt").textContent = "Recording…";
+    Speech.removeAllListeners();
+    Speech.addListener("partialResults", (d) => { if (d?.matches?.length) sttPartial = d.matches[0]; });
+    sttDone = Speech.start({ language: "en-US", partialResults: true, popup: false })
+      .then((r) => { sttFinal = r?.matches?.[0] ?? null; }).catch(() => {});
+  }
+  async function offlineVoiceRelease() {
+    $("btn-ptt").classList.remove("recording"); $("btn-ptt").textContent = "Press & hold to answer";
+    try { await Speech.stop(); } catch {}
+    await Promise.race([sttDone, new Promise((r) => setTimeout(r, 2000))]);
+    const transcript = (sttFinal || sttPartial || "").trim();
+    if (!transcript) { $("status").textContent = "Didn't catch that — try again or type."; return; }
+    submitTypedAnswer(transcript, "voice_offline");
+  }
+
+  function pttPress() {
+    if (offlineSession && nativeSttReady) return offlineVoicePress();
+    startRecording();
+  }
+  function pttRelease() {
+    if (offlineSession && nativeSttReady) return offlineVoiceRelease();
+    stopRecording();
+  }
 
   const ptt = $("btn-ptt");
   ptt.addEventListener("pointerdown", (e) => {

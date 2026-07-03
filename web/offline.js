@@ -533,7 +533,7 @@
     return { value: Number.isFinite(n) ? n : null, skipped: false, raw: raw };
   }
 
-  function buildOfflineAttempt(seed, rawAnswer, timing) {
+  function buildOfflineAttempt(seed, rawAnswer, timing, mode) {
     timing = timing || {};
     var parsed = parseTypedAnswer(rawAnswer);
     var expected = numberOrNull(seed.expected_answer ?? seed.expected);
@@ -548,7 +548,7 @@
       prompt_text: seed.prompt_text,
       expected_answer: expected,
       parsed_answer: parsed.value,
-      answer_mode: "typed",
+      answer_mode: mode || "typed",
       raw_transcript: parsed.raw,
       skipped: parsed.skipped,
       correct: verdict.correct,
