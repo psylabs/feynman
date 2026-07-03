@@ -42,6 +42,7 @@
   async function showScreen(id) {
     // Leaving an active session via nav: end it cleanly.
     if (sessionId && id !== "screen-session" && id !== "screen-review") {
+      setSessionActive(false);
       releaseMicStream("nav");
       if (!offlineSession) {
         try {
@@ -515,6 +516,7 @@
       return alert("Could not reach the backend.");
     }
     if (r.detail) return alert(r.detail);
+    setSessionActive(true);
     resetOfflineSession();
     sessionId = r.session_id;
     currentQid = null;
@@ -545,6 +547,7 @@
       return alert("Offline storage is not ready.");
     }
 
+    setSessionActive(true);
     resetOfflineSession();
     releaseMicStream("offline_start");
     offlineSession = true;
@@ -666,6 +669,7 @@
       $("status").textContent = "Offline storage is not ready.";
       return;
     }
+    setSessionActive(true);
     offlineSession = true;
     offlineUserId = user.id;
     releaseMicStream("offline_continue");
@@ -1182,6 +1186,7 @@
 
   async function endSession() {
     if (!sessionId) return;
+    setSessionActive(false);
     releaseMicStream("session_end");
     if (offlineSession) {
       const userId = offlineUserId;
@@ -1868,46 +1873,57 @@
   $("btn-skip-typed")?.addEventListener("click", () => submitTypedAnswer("skip"));
   $("btn-skip-voice")?.addEventListener("click", () => submitVoiceSkip());
 
+  function pttPress() { startRecording(); }
+  function pttRelease() { stopRecording(); }
+
   const ptt = $("btn-ptt");
   ptt.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     try { ptt.setPointerCapture(e.pointerId); } catch {}
-    startRecording();
+    pttPress();
   });
   ptt.addEventListener("pointerup", (e) => {
     e.preventDefault();
     try { ptt.releasePointerCapture(e.pointerId); } catch {}
-    stopRecording();
+    pttRelease();
   });
-  ptt.addEventListener("pointercancel", () => stopRecording());
+  ptt.addEventListener("pointercancel", () => pttRelease());
   // Block the long-press context menu on Android.
   ptt.addEventListener("contextmenu", (e) => e.preventDefault());
 
   let spaceDown = false;
-  let volumeKeyDown = false;
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !spaceDown && !$("btn-ptt").disabled) {
       e.preventDefault();
       spaceDown = true;
-      startRecording();
-    }
-    // Volume keys work as PTT on Android Chrome when a non-input element has focus.
-    if ((e.code === "AudioVolumeUp" || e.code === "AudioVolumeDown") && !$("btn-ptt").disabled) {
-      e.preventDefault();
-      if (!volumeKeyDown) { volumeKeyDown = true; startRecording(); }
+      pttPress();
     }
   });
   window.addEventListener("keyup", (e) => {
     if (e.code === "Space" && spaceDown) {
       e.preventDefault();
       spaceDown = false;
-      stopRecording();
+      pttRelease();
     }
-    if (e.code === "AudioVolumeUp" || e.code === "AudioVolumeDown") {
-      e.preventDefault();
-      volumeKeyDown = false;
-      stopRecording();
-    }
+  });
+
+  const PttKeys = window.Capacitor?.Plugins?.PttKeys || null;
+  if (PttKeys) {
+    PttKeys.addListener("pttDown", () => { if (!$("btn-ptt").disabled) pttPress(); });
+    PttKeys.addListener("pttUp", () => pttRelease());
+  }
+  let sessionActive = false;
+  function setSessionActive(on) {
+    sessionActive = !!on;
+    PttKeys?.setArmed({ armed: sessionActive });
+    PttKeys?.setKeepAwake({ on: sessionActive });
+  }
+  // Android recreates the activity on cover-screen/main-screen transitions
+  // (e.g. Moto Razr), which resets the native plugin's armed/keep-awake
+  // state. Re-apply ours when Capacitor resumes.
+  document.addEventListener("resume", () => setSessionActive(sessionActive));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") setSessionActive(sessionActive);
   });
 
   $("btn-quick-drill").addEventListener("click", () => startSession("drill", 5));
