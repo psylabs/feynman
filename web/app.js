@@ -491,9 +491,26 @@
 
   // ---- session lifecycle -------------------------------------------------
 
+  // Re-entrancy guard: a double-tap on a start button while the connectivity
+  // check / server round-trip is in flight raced two sessions — offline, both
+  // pulled the SAME seed (nextSeed doesn't consume until answered) and read
+  // the prompt twice. Held until the session screen is fully set up, and
+  // released by endSession() via setSessionActive(false).
+  let sessionStarting = false;
+
   async function startSession(mode, fixedLength) {
+    if (sessionStarting || sessionId) return;
     const user = window.feynmanUser?.getCurrent?.();
     if (!user) return alert("Pick a player first.");
+    sessionStarting = true;
+    try {
+      await startSessionInner(user, mode, fixedLength);
+    } finally {
+      sessionStarting = false;
+    }
+  }
+
+  async function startSessionInner(user, mode, fixedLength) {
     const body = { user_id: user.id, mode };
     let targetQuestions = null;
     if (mode === "drill") {
