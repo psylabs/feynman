@@ -1885,20 +1885,59 @@
   let nativeSttReady = false;
   (async () => { try { nativeSttReady = Speech && (await Speech.available()).available === true; } catch {} })();
 
-  let sttPartial = "", sttFinal = null, sttDone = Promise.resolve();
+  // Event semantics (verified against the vendored plugin source, see
+  // node_modules/@capacitor-community/speech-recognition/android/src/main/java/.../SpeechRecognition.java):
+  //  - start({partialResults:true, popup:false}) resolves the JS promise the
+  //    instant native listening begins (line 198-200: `if (partialResults)
+  //    call.resolve();`), *before* any speech is recognized. It carries no
+  //    transcript.
+  //  - Every recognized chunk — interim AND the final one — arrives via the
+  //    "partialResults" listener event: interim chunks from onPartialResults
+  //    (line 313-325), the final chunk from onResults (line 292-306, which
+  //    routes through `notifyListeners("partialResults", ret)` at line 304
+  //    whenever partialResults is true). There is no separate "final" event;
+  //    the last "partialResults" event to arrive *is* the final transcript.
+  //  - stop() (line 87-94) only ever calls call.reject() on a thrown
+  //    exception; on the normal path it posts a Runnable and returns without
+  //    ever resolving the call. Awaiting it bare hangs forever.
+  //  - The "listeningState" event fires "started" from onBeginningOfSpeech
+  //    (line 244-255) and "stopped" from onEndOfSpeech (line 263-279).
+  //    onEndOfSpeech consistently fires before the final onResults, so
+  //    "stopped" is a reliable (if not sufficient on its own) signal that the
+  //    final partialResults event is imminent — hence the grace window below.
+  let sttPartial = "";
+  let sttSession = 0;
+  let sttStoppedPromise = Promise.resolve();
   function offlineVoicePress() {
-    sttPartial = ""; sttFinal = null;
+    const session = ++sttSession;
+    sttPartial = "";
     $("btn-ptt").classList.add("recording"); $("btn-ptt").textContent = "Recording…";
     Speech.removeAllListeners();
-    Speech.addListener("partialResults", (d) => { if (d?.matches?.length) sttPartial = d.matches[0]; });
-    sttDone = Speech.start({ language: "en-US", partialResults: true, popup: false })
-      .then((r) => { sttFinal = r?.matches?.[0] ?? null; }).catch(() => {});
+    let resolveStopped;
+    sttStoppedPromise = new Promise((resolve) => { resolveStopped = resolve; });
+    Speech.addListener("partialResults", (d) => {
+      if (session !== sttSession) return; // stale event from a prior press cycle
+      if (d?.matches?.length) sttPartial = d.matches[0];
+    });
+    Speech.addListener("listeningState", (d) => {
+      if (session !== sttSession) return;
+      if (d?.status === "stopped") resolveStopped();
+    });
+    Speech.start({ language: "en-US", partialResults: true, popup: false }).catch((err) => {
+      logClientEvent("offline_stt_start_error", { message: String(err?.message || err || "") });
+    });
   }
   async function offlineVoiceRelease() {
     $("btn-ptt").classList.remove("recording"); $("btn-ptt").textContent = "Press & hold to answer";
-    try { await Speech.stop(); } catch {}
-    await Promise.race([sttDone, new Promise((r) => setTimeout(r, 2000))]);
-    const transcript = (sttFinal || sttPartial || "").trim();
+    const session = sttSession;
+    Speech.stop().catch(() => {}); // never await: native stop() never resolves on success
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    await Promise.race([
+      sttStoppedPromise.then(() => wait(300)), // grace window for the final partialResults event
+      wait(2000), // hard cap so release can never hang
+    ]);
+    if (session !== sttSession) return; // a new press cycle started while we waited
+    const transcript = sttPartial.trim();
     if (!transcript) { $("status").textContent = "Didn't catch that — try again or type."; return; }
     submitTypedAnswer(transcript, "voice_offline");
   }
