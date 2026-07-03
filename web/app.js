@@ -1908,9 +1908,16 @@
   let sttPartial = "";
   let sttSession = 0;
   let sttStoppedPromise = Promise.resolve();
+  // Set (to the rejection message) when Speech.start() itself fails to
+  // launch a listening session — e.g. RECORD_AUDIO permission missing. Reset
+  // per press cycle. Checked by offlineVoiceRelease to short-circuit its
+  // wait (there is no listening session to wait on) and to surface a
+  // permission-specific status instead of the generic "didn't catch that".
+  let sttStartError = null;
   function offlineVoicePress() {
     const session = ++sttSession;
     sttPartial = "";
+    sttStartError = null;
     $("btn-ptt").classList.add("recording"); $("btn-ptt").textContent = "Recording…";
     Speech.removeAllListeners();
     let resolveStopped;
@@ -1924,29 +1931,63 @@
       if (d?.status === "stopped") resolveStopped();
     });
     Speech.start({ language: "en-US", partialResults: true, popup: false }).catch((err) => {
-      logClientEvent("offline_stt_start_error", { message: String(err?.message || err || "") });
+      if (session !== sttSession) return; // stale rejection from a prior press cycle
+      sttStartError = String(err?.message || err || "");
+      logClientEvent("offline_stt_start_error", { message: sttStartError });
+      resolveStopped(); // short-circuit release's wait — no listening session ever started
     });
   }
   async function offlineVoiceRelease() {
     $("btn-ptt").classList.remove("recording"); $("btn-ptt").textContent = "Press & hold to answer";
     const session = sttSession;
     Speech.stop().catch(() => {}); // never await: native stop() never resolves on success
-    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-    await Promise.race([
-      sttStoppedPromise.then(() => wait(300)), // grace window for the final partialResults event
-      wait(2000), // hard cap so release can never hang
-    ]);
+    if (!sttStartError) {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      await Promise.race([
+        sttStoppedPromise.then(() => wait(300)), // grace window for the final partialResults event
+        wait(2000), // hard cap so release can never hang
+      ]);
+    }
     if (session !== sttSession) return; // a new press cycle started while we waited
+    if (sttStartError) {
+      // The vendored plugin rejects with "Missing permission" when
+      // RECORD_AUDIO isn't granted; surface that distinctly rather than the
+      // generic no-transcript message. No permission-request flow here —
+      // just point the user at app settings.
+      $("status").textContent = /missing permission/i.test(sttStartError)
+        ? "Mic permission needed — check app settings."
+        : "Didn't catch that — try again or type.";
+      sttPartial = "";
+      return;
+    }
     const transcript = sttPartial.trim();
+    sttPartial = ""; // never let a transcript survive into a later press cycle
     if (!transcript) { $("status").textContent = "Didn't catch that — try again or type."; return; }
     submitTypedAnswer(transcript, "voice_offline");
   }
 
+  // Dispatcher: pttHeld is set true only when a press actually passed its
+  // guard (button not disabled) and dispatched a start path, and is
+  // consumed (checked + reset) by the matching release. This closes a ghost-
+  // submit hole: hardware pttUp calls pttRelease() unconditionally with no
+  // way to know whether the paired pttDown was dropped by the disabled
+  // check (e.g. a volume-down tap lands while #btn-ptt is disabled during
+  // the next question's prompt audio) — without the guard, release would
+  // find the stale sttPartial/recording state from a previous answer and
+  // submit it against the new question. It also makes a second release
+  // event for the same press (pointerup followed by pointercancel, or a
+  // hardware key event racing a pointer event) a no-op: the first call
+  // consumes pttHeld, the second early-returns.
+  let pttHeld = false;
   function pttPress() {
+    if ($("btn-ptt").disabled) return;
+    pttHeld = true;
     if (offlineSession && nativeSttReady) return offlineVoicePress();
     startRecording();
   }
   function pttRelease() {
+    if (!pttHeld) return;
+    pttHeld = false;
     if (offlineSession && nativeSttReady) return offlineVoiceRelease();
     stopRecording();
   }
@@ -1993,10 +2034,19 @@
     PttKeys?.setArmed({ armed: sessionActive });
     PttKeys?.setKeepAwake({ on: sessionActive });
   }
+  // The native plugin instance survives a JS-only reload (e.g. an OTA bundle
+  // applying mid-session), so a previous session's "armed" flag can be left
+  // set with no session actually active, swallowing volume-down presses.
+  // Disarm once at boot; harmless no-op on old APKs without this plugin and
+  // when no session was previously active.
+  setSessionActive(false);
   // Android recreates the activity on cover-screen/main-screen transitions
   // (e.g. Moto Razr), which resets the native plugin's armed/keep-awake
-  // state. Re-apply ours when Capacitor resumes.
-  document.addEventListener("resume", () => setSessionActive(sessionActive));
+  // state. visibilitychange is the only re-arm signal available here —
+  // Capacitor's bridge does not dispatch a "resume" event on `document` (no
+  // @capacitor/app plugin is installed, and the native bridge only exposes
+  // its own lifecycle callbacks, not a document-level DOM event). This must
+  // be verified on the Razr flip transition during device testing.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") setSessionActive(sessionActive);
   });

@@ -95,3 +95,19 @@ test("parseTypedAnswer handles invalid word 'banana' as null", () => {
   assert.equal(result.value, null);
   assert.equal(result.skipped, false);
 });
+
+test("parseTypedAnswer strips trailing period from 'forty two.'", () => {
+  const { parseTypedAnswer } = loadOfflineModule();
+
+  const result = parseTypedAnswer("forty two.");
+  assert.equal(result.value, 42);
+  assert.equal(result.skipped, false);
+});
+
+test("parseTypedAnswer strips trailing question mark from 'seven point five?'", () => {
+  const { parseTypedAnswer } = loadOfflineModule();
+
+  const result = parseTypedAnswer("seven point five?");
+  assert.equal(result.value, 7.5);
+  assert.equal(result.skipped, false);
+});
