@@ -2031,6 +2031,10 @@
   let sessionActive = false;
   function setSessionActive(on) {
     sessionActive = !!on;
+    if (!on) {
+      pttHeld = false;
+      sttPartial = "";
+    }
     PttKeys?.setArmed({ armed: sessionActive });
     PttKeys?.setKeepAwake({ on: sessionActive });
   }

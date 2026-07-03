@@ -520,15 +520,15 @@
     raw = (raw || "").trim();
     if (!raw) return { value: null, skipped: false, raw: raw };
     var cleaned = raw.toLowerCase();
+    cleaned = cleaned.replace(/[$,%]/g, "").replace(/,/g, "");
+    // Dictation-mode recognizers sometimes emit trailing sentence punctuation
+    // ("forty two.", "seven point five?"); strip it before the skip-phrase check
+    // and digit-regex and word-parsing attempts below, or a trailing "." / "?"
+    // glued onto the last token makes both fail to match.
+    cleaned = cleaned.replace(/[.?!]+$/, "").trim();
     if (/^(skip|pass|don'?t know|no idea|not sure|dunno)$/.test(cleaned)) {
       return { value: null, skipped: true, raw: raw };
     }
-    cleaned = cleaned.replace(/[$,%]/g, "").replace(/,/g, "");
-    // Dictation-mode recognizers sometimes emit trailing sentence punctuation
-    // ("forty two.", "seven point five?"); strip it before the digit-regex
-    // and word-parsing attempts below, or a trailing "." / "?" glued onto the
-    // last token makes both fail to match.
-    cleaned = cleaned.replace(/[.?!]+$/, "").trim();
     var match = cleaned.match(/-?\d+(?:\.\d+)?/);
     if (!match) {
       var wordValue = wordsToNumber(cleaned);

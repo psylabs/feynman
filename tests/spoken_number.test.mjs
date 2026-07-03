@@ -111,3 +111,11 @@ test("parseTypedAnswer strips trailing question mark from 'seven point five?'", 
   assert.equal(result.value, 7.5);
   assert.equal(result.skipped, false);
 });
+
+test("parseTypedAnswer recognizes dictated 'skip.' with trailing period", () => {
+  const { parseTypedAnswer } = loadOfflineModule();
+
+  const result = parseTypedAnswer("skip.");
+  assert.equal(result.value, null);
+  assert.equal(result.skipped, true);
+});
