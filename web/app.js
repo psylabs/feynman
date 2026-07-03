@@ -504,16 +504,34 @@
       }
       backgroundOfflineSync(user.id);
     }
+    // Airplane mode leaves the Tailscale interface up, so the API fetch
+    // black-holes for ~2 minutes of TCP retries instead of failing fast.
+    // Check connectivity first, and cap the fetch at 5s for the
+    // connected-but-server-unreachable case (off the tailnet).
+    let connected = true;
+    try {
+      const net = window.Capacitor?.Plugins?.Network;
+      if (net) connected = (await net.getStatus()).connected !== false;
+    } catch {}
+    if (!connected) {
+      if (mode === "drill") return startOfflineSession(user, targetQuestions || 5);
+      return alert("Could not reach the backend.");
+    }
     let r;
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 5000);
     try {
       r = await fetch("/session/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: abort.signal,
       }).then((res) => res.json());
     } catch {
       if (mode === "drill") return startOfflineSession(user, targetQuestions || 5);
       return alert("Could not reach the backend.");
+    } finally {
+      clearTimeout(abortTimer);
     }
     if (r.detail) return alert(r.detail);
     setSessionActive(true);
