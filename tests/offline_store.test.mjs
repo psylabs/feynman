@@ -49,7 +49,9 @@ function loadOfflineModule() {
     },
   };
   vm.runInNewContext(readFileSync("web/offline.js", "utf8"), context);
-  return context.window;
+  // Exposed alongside the window API so offline-simulation tests can flip
+  // navigator.onLine and have the module's onlineStatus() see it.
+  return Object.assign(context.window, { __navigator: context.navigator });
 }
 
 function samplePack() {
@@ -406,4 +408,122 @@ test("seed refresh stores prompt audio data for airplane mode playback", async (
   assert.deepEqual(plain(result), { ok: true, count: 2 });
   assert.equal(savedPack.items[0].audio_data_url, "data:audio/mock;base64,add.wav");
   assert.equal(savedPack.items[1].audio_data_url, "data:audio/mock;base64,money.wav");
+});
+
+// ---- client event telemetry queue -----------------------------------------
+
+test("queueClientEvent no-ops without throwing when SQLite storage is unavailable", async () => {
+  const { createFeynmanOfflineStore } = loadOfflineModule();
+  const store = createFeynmanOfflineStore({ driver: null });
+
+  await assert.doesNotReject(store.queueClientEvent("boot_timing", { interactive_ms: 42 }));
+  assert.equal((await store.pendingClientEvents(10)).length, 0);
+});
+
+test("queueClientEvent inserts events retrievable oldest-first", async () => {
+  const { createFeynmanOfflineStore } = loadOfflineModule();
+  let clock = 1000;
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), nowMs: () => clock++ });
+
+  await store.queueClientEvent("session_start_tap", { blocked: false });
+  await store.queueClientEvent("offline_question_served", { seed_local_id: 7 });
+
+  const pending = await store.pendingClientEvents(10);
+  assert.equal(pending.length, 2);
+  assert.equal(pending[0].type, "session_start_tap");
+  assert.deepEqual(plain(pending[0].payload), { blocked: false });
+  assert.equal(pending[0].created_at, 1000);
+  assert.equal(pending[1].type, "offline_question_served");
+  assert.deepEqual(plain(pending[1].payload), { seed_local_id: 7 });
+  assert.equal(pending[1].created_at, 1001);
+});
+
+test("queueClientEvent caps the table at 500 rows, dropping the oldest first", async () => {
+  const { createFeynmanOfflineStore } = loadOfflineModule();
+  let clock = 0;
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), nowMs: () => clock++ });
+
+  for (let i = 0; i < 501; i++) {
+    await store.queueClientEvent("tick", { i });
+  }
+
+  const pending = await store.pendingClientEvents(1000);
+  assert.equal(pending.length, 500);
+  // Event i=0 (the oldest) should have been dropped; the surviving oldest is i=1.
+  assert.equal(pending[0].payload.i, 1);
+  assert.equal(pending[pending.length - 1].payload.i, 500);
+});
+
+test("flushClientEvents batches queued events into one POST /client-log/bulk and deletes them on success", async () => {
+  const { createFeynmanOfflineController, createFeynmanOfflineStore } = loadOfflineModule();
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), nowMs: () => 5000 });
+  const requests = [];
+  const controller = createFeynmanOfflineController({
+    store,
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true, count: 2 }) };
+    },
+  });
+
+  await controller.queueClientEvent("session_start_tap", { blocked: false });
+  await controller.queueClientEvent("offline_question_served", { seed_local_id: 3 });
+
+  const result = await controller.flushClientEvents();
+
+  assert.equal(result.ok, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/client-log/bulk");
+  const body = JSON.parse(requests[0].options.body);
+  assert.equal(body.events.length, 2);
+  assert.equal(body.events[0].type, "session_start_tap");
+  assert.equal(body.events[0].created_at, 5000);
+  assert.equal(body.events[0].blocked, false);
+  assert.equal(body.events[1].type, "offline_question_served");
+  assert.equal(body.events[1].seed_local_id, 3);
+
+  assert.equal((await store.pendingClientEvents(10)).length, 0);
+});
+
+test("flushClientEvents falls back to per-event POST /client-log when bulk 404s (older server)", async () => {
+  const { createFeynmanOfflineController, createFeynmanOfflineStore } = loadOfflineModule();
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), nowMs: () => 9000 });
+  const requests = [];
+  const controller = createFeynmanOfflineController({
+    store,
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      if (url === "/client-log/bulk") return { ok: false, status: 404 };
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    },
+  });
+
+  await controller.queueClientEvent("boot_timing", { interactive_ms: 12 });
+  await controller.queueClientEvent("boot_timing", { interactive_ms: 34 });
+
+  const result = await controller.flushClientEvents();
+
+  assert.equal(result.ok, true);
+  assert.equal(requests[0].url, "/client-log/bulk");
+  assert.equal(requests.length, 3);
+  assert.equal(requests[1].url, "/client-log");
+  assert.equal(requests[2].url, "/client-log");
+  assert.equal((await store.pendingClientEvents(10)).length, 0);
+});
+
+test("flushClientEvents leaves the queue intact when offline", async () => {
+  const mod = loadOfflineModule();
+  const { createFeynmanOfflineController, createFeynmanOfflineStore } = mod;
+  const store = createFeynmanOfflineStore({ driver: new NodeSqliteDriver(), nowMs: () => 1 });
+  const controller = createFeynmanOfflineController({
+    store,
+    fetch: async () => { throw new Error("should not be called while offline"); },
+  });
+  mod.__navigator.onLine = false;
+
+  await controller.queueClientEvent("boot_timing", { interactive_ms: 1 });
+  const result = await controller.flushClientEvents();
+
+  assert.equal(result.ok, false);
+  assert.equal((await store.pendingClientEvents(10)).length, 1);
 });

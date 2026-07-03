@@ -22,6 +22,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 from server import diagnosis, seed_pack, tts  # noqa: E402
 from server import feedback_semantics  # noqa: E402
+from server.client_events import emit_client_event  # noqa: E402
 from server.events import EventBus  # noqa: E402
 from server.orchestrator import Orchestrator  # noqa: E402
 from server.storage import Storage  # noqa: E402
@@ -421,15 +422,19 @@ def post_feedback(payload: dict):
 
 @app.post("/client-log")
 def client_log(payload: dict):
-    raw_type = str(payload.get("type") or "event").lower()
-    safe_type = "".join(
-        ch if ch.isalnum() or ch in "._-" else "_" for ch in raw_type
-    )[:80] or "event"
-    data = dict(payload)
-    data.pop("type", None)
-    data.pop("ts", None)
-    bus.emit(f"client.{safe_type}", **data)
+    emit_client_event(bus, payload)
     return {"ok": True}
+
+
+@app.post("/client-log/bulk")
+def client_log_bulk(payload: dict):
+    events = payload.get("events") or []
+    count = 0
+    for event in events:
+        if isinstance(event, dict):
+            emit_client_event(bus, event)
+            count += 1
+    return {"ok": True, "count": count}
 
 
 @app.get("/audio/{name}")

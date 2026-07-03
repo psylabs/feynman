@@ -181,11 +181,20 @@
   window.micStreamSnapshot = micStreamSnapshot;
 
   function logClientEvent(type, data) {
+    const payload = { session_id: sessionId, qid: currentQid, ...(data || {}) };
+    // Airplane mode: don't burn a network round-trip we know will fail —
+    // queue straight to the offline outbox instead.
+    if (offlineSession) {
+      window.feynmanOffline?.queueClientEvent?.(type, payload);
+      return;
+    }
     fetch("/client-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type, session_id: sessionId, qid: currentQid, ...(data || {}) }),
-    }).catch(() => {});
+      body: JSON.stringify({ type, ...payload }),
+    }).catch(() => {
+      window.feynmanOffline?.queueClientEvent?.(type, payload);
+    });
   }
 
   function releaseMicStream(reason) {
@@ -328,6 +337,7 @@
     try {
       await window.feynmanOffline.init();
       await window.feynmanOffline.flushOutbox(userId);
+      await window.feynmanOffline.flushClientEvents?.();
       const s = await window.feynmanOffline.stats(userId);
       if (s.seedRemaining < 4) await window.feynmanOffline.refreshSeedPack(userId, 10);
     } catch (e) {
@@ -499,7 +509,9 @@
   let sessionStarting = false;
 
   async function startSession(mode, fixedLength) {
-    if (sessionStarting || sessionId) return;
+    const blocked = !!(sessionStarting || sessionId);
+    logClientEvent("session_start_tap", { mode, blocked });
+    if (blocked) return;
     const user = window.feynmanUser?.getCurrent?.();
     if (!user) return alert("Pick a player first.");
     sessionStarting = true;
@@ -750,6 +762,7 @@
 
     offlineQuestion = seed;
     currentQid = `offline:${seed.local_id}`;
+    logClientEvent("offline_question_served", { seed_local_id: seed.local_id });
     offlinePosition += 1;
     sessionPosition = offlinePosition;
     $("prompt").textContent = seed.prompt_text;
@@ -1951,23 +1964,38 @@
   // wait (there is no listening session to wait on) and to surface a
   // permission-specific status instead of the generic "didn't catch that".
   let sttStartError = null;
+  // Timing instrumentation for voice_offline_timing (see offlineVoiceRelease).
+  // Reset per press cycle alongside the state above.
+  let sttPressTs = 0;
+  let sttReadyTs = null;
+  let sttFirstPartialTs = null;
+  let sttPartialCount = 0;
   function offlineVoicePress() {
     const session = ++sttSession;
     sttPartial = "";
     sttStartError = null;
+    sttPressTs = Date.now();
+    sttReadyTs = null;
+    sttFirstPartialTs = null;
+    sttPartialCount = 0;
     $("btn-ptt").classList.add("recording"); $("btn-ptt").textContent = "Recording…";
     Speech.removeAllListeners();
     let resolveStopped;
     sttStoppedPromise = new Promise((resolve) => { resolveStopped = resolve; });
     Speech.addListener("partialResults", (d) => {
       if (session !== sttSession) return; // stale event from a prior press cycle
+      sttPartialCount += 1;
+      if (sttFirstPartialTs == null) sttFirstPartialTs = Date.now();
       if (d?.matches?.length) sttPartial = d.matches[0];
     });
     Speech.addListener("listeningState", (d) => {
       if (session !== sttSession) return;
       if (d?.status === "stopped") resolveStopped();
     });
-    Speech.start({ language: "en-US", partialResults: true, popup: false }).catch((err) => {
+    Speech.start({ language: "en-US", partialResults: true, popup: false }).then(() => {
+      if (session !== sttSession) return; // stale resolution from a prior press cycle
+      sttReadyTs = Date.now(); // partialResults:true makes this resolve ~immediately at listen start
+    }).catch((err) => {
       if (session !== sttSession) return; // stale rejection from a prior press cycle
       sttStartError = String(err?.message || err || "");
       logClientEvent("offline_stt_start_error", { message: sttStartError });
@@ -1977,15 +2005,39 @@
   async function offlineVoiceRelease() {
     $("btn-ptt").classList.remove("recording"); $("btn-ptt").textContent = "Press & hold to answer";
     const session = sttSession;
+    const seedLocalId = offlineQuestion?.local_id ?? null;
+    const pressTs = sttPressTs;
+    const readyTs = sttReadyTs;
+    const firstPartialTs = sttFirstPartialTs;
+    const partialCount = sttPartialCount;
+    const releaseTs = Date.now();
+    const emitTiming = (endSignal, transcript) => {
+      const t = transcript || "";
+      const parsed = t ? window.parseTypedAnswer?.(t) : null;
+      logClientEvent("voice_offline_timing", {
+        press_to_ready_ms: readyTs != null ? readyTs - pressTs : null,
+        first_partial_ms: firstPartialTs != null ? firstPartialTs - pressTs : null,
+        partial_count: partialCount,
+        release_wait_ms: Date.now() - releaseTs,
+        end_signal: endSignal,
+        transcript_len: t.length,
+        parsed_ok: !!(t && parsed && (parsed.skipped || parsed.value != null)),
+        seed_local_id: seedLocalId,
+      });
+    };
     Speech.stop().catch(() => {}); // never await: native stop() never resolves on success
+    let endSignal = sttStartError ? "start_error" : null;
     if (!sttStartError) {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-      await Promise.race([
-        sttStoppedPromise.then(() => wait(300)), // grace window for the final partialResults event
-        wait(2000), // hard cap so release can never hang
+      endSignal = await Promise.race([
+        sttStoppedPromise.then(() => wait(300)).then(() => "stopped"), // grace window for the final partialResults event
+        wait(2000).then(() => "cap"), // hard cap so release can never hang
       ]);
     }
-    if (session !== sttSession) return; // a new press cycle started while we waited
+    if (session !== sttSession) {
+      emitTiming("no_press", ""); // a new press cycle started while we waited
+      return;
+    }
     if (sttStartError) {
       // The vendored plugin rejects with "Missing permission" when
       // RECORD_AUDIO isn't granted; surface that distinctly rather than the
@@ -1995,10 +2047,12 @@
         ? "Mic permission needed — check app settings."
         : "Didn't catch that — try again or type.";
       sttPartial = "";
+      emitTiming("start_error", "");
       return;
     }
     const transcript = sttPartial.trim();
     sttPartial = ""; // never let a transcript survive into a later press cycle
+    emitTiming(endSignal, transcript);
     if (!transcript) { $("status").textContent = "Didn't catch that — try again or type."; return; }
     submitTypedAnswer(transcript, "voice_offline");
   }

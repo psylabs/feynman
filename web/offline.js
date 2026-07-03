@@ -74,7 +74,16 @@
       last_error_at TEXT,
       last_error TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS client_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at REAL,
+      type TEXT,
+      payload_json TEXT
+    );
   `;
+
+  var CLIENT_EVENTS_CAP = 500;
 
   function isoNow() {
     return new Date().toISOString();
@@ -222,6 +231,7 @@
     options = options || {};
     var driver = options.driver || createCapacitorSQLiteDriver(options.database || DB_NAME, options.plugin);
     var now = options.now || isoNow;
+    var nowMs = options.nowMs || function () { return Date.now(); };
     var initialized = false;
 
     async function ensureAvailable() {
@@ -476,6 +486,52 @@
           lastSync: await this.syncStatus(userId),
         };
       },
+
+      // Telemetry queue: best-effort, never throws (a lost client_log event
+      // is not worth taking down the app over), and a plain no-op when
+      // SQLite storage isn't available (plain browser context, or the
+      // native plugin failed to attach).
+      async queueClientEvent(type, payload) {
+        if (!driver) return;
+        try {
+          await ensureAvailable();
+          await driver.run(
+            `INSERT INTO client_events (created_at, type, payload_json) VALUES (?, ?, ?)`,
+            [nowMs(), String(type || "event"), JSON.stringify(payload || {})]
+          );
+          await driver.run(
+            `DELETE FROM client_events WHERE id NOT IN (
+               SELECT id FROM client_events ORDER BY id DESC LIMIT ?
+             )`,
+            [CLIENT_EVENTS_CAP]
+          );
+        } catch {}
+      },
+
+      async pendingClientEvents(limit) {
+        if (!driver) return [];
+        await ensureAvailable();
+        var res = await driver.query(
+          `SELECT id, created_at, type, payload_json FROM client_events ORDER BY id LIMIT ?`,
+          [limit || CLIENT_EVENTS_CAP]
+        );
+        return (res.values || []).map(function (row) {
+          return {
+            id: row.id,
+            created_at: row.created_at,
+            type: row.type,
+            payload: safeJsonParse(row.payload_json, {}),
+          };
+        });
+      },
+
+      async deleteClientEvents(ids) {
+        if (!driver || !ids || !ids.length) return;
+        await ensureAvailable();
+        for (var i = 0; i < ids.length; i++) {
+          await driver.run("DELETE FROM client_events WHERE id = ?", [ids[i]]);
+        }
+      },
     };
   }
 
@@ -702,6 +758,49 @@
       }
     }
 
+    // Drains the client_events telemetry queue: one bulk POST when the
+    // server supports it, falling back to a per-event POST /client-log loop
+    // against an older server that 404s on the bulk route. Unlike
+    // flushOutbox, this isn't scoped to a user_id — telemetry can queue
+    // before a user is even picked.
+    async function flushClientEvents() {
+      if (!(await onlineStatus())) return { ok: false, reason: "offline" };
+      await init();
+      if (!fetchFn) return { ok: false, reason: "no-fetch" };
+      var pending = await store.pendingClientEvents(CLIENT_EVENTS_CAP);
+      if (!pending.length) return { ok: true, flushed: 0 };
+      var events = pending.map(function (row) {
+        return Object.assign({ type: row.type, created_at: row.created_at }, row.payload);
+      });
+      try {
+        var res = await fetchFn("/client-log/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ events: events }),
+        });
+        if (res.status === 404) {
+          var deliveredIds = [];
+          for (var i = 0; i < pending.length; i++) {
+            try {
+              var single = await fetchFn("/client-log", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(events[i]),
+              });
+              if (single && single.ok) deliveredIds.push(pending[i].id);
+            } catch {}
+          }
+          if (deliveredIds.length) await store.deleteClientEvents(deliveredIds);
+          return { ok: true, flushed: deliveredIds.length, fallback: true };
+        }
+        if (!res.ok) throw new Error("client-log bulk HTTP " + res.status);
+        await store.deleteClientEvents(pending.map(function (r) { return r.id; }));
+        return { ok: true, flushed: pending.length };
+      } catch (e) {
+        return { ok: false, reason: String((e && (e.message || e)) || "flush failed") };
+      }
+    }
+
     return {
       store: store,
       init: init,
@@ -709,11 +808,13 @@
       onOnline: onOnline,
       refreshSeedPack: refreshSeedPack,
       flushOutbox: flushOutbox,
+      flushClientEvents: flushClientEvents,
       stats: function (userId) { return store.stats(userId); },
       nextSeed: function (userId) { return store.nextSeed(userId); },
       markSeedUsed: function (localId) { return store.markSeedUsed(localId); },
       queueAttempt: function (userId, attempt) { return store.queueAttempt(userId, attempt); },
       queueFeedback: function (userId, feedback) { return store.queueFeedback(userId, feedback); },
+      queueClientEvent: function (type, payload) { return store.queueClientEvent(type, payload); },
       isAvailable: function () { return store.isAvailable(); },
     };
   }
