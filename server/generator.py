@@ -236,7 +236,9 @@ def _gen_division(level: int, target: dict | None = None) -> dict:
     if target and target.get("a") is not None and target.get("b") is not None:
         a, b = int(target["a"]), int(target["b"])
     else:
-        divisors_l1 = [2, 5, 10]
+        # /2 is suppressed (division small_operand, 2026-07-02) — dropped from
+        # the pool so it doesn't burn the suppression retry budget.
+        divisors_l1 = [5, 10]
         divisors_l2 = [3, 4, 6, 7, 8, 9]
         divisors_l3 = [11, 12, 15, 20]
         pool = {1: divisors_l1, 2: divisors_l2, 3: divisors_l3}.get(level, divisors_l2)

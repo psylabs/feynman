@@ -667,7 +667,9 @@
     $("typed-answer-input").disabled = !!disabled;
     $("btn-submit-typed").disabled = !!disabled;
     $("btn-skip-typed").disabled = !!disabled;
-    if (!disabled) setTimeout(() => $("typed-answer-input").focus(), 0);
+    // Offline answers are voice-first: auto-focusing here pops the Android
+    // keyboard over the drill. The field still works on tap.
+    if (!disabled && !offlineSession) setTimeout(() => $("typed-answer-input").focus(), 0);
   }
 
   async function continueOfflineSession() {
