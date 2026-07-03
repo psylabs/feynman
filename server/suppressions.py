@@ -95,6 +95,18 @@ def _small_operand(skill_id: str, params: dict) -> bool:
     return _f(params).get("min_operand", float("inf")) <= 2
 
 
+@rule("ten_divisor")
+def _ten_divisor(skill_id: str, params: dict) -> bool:
+    """Dividing by 10/20/... is a decimal shift, not division practice.
+
+    Same doctrine as by_ten (no exceptions for round multiples of 10), but
+    keyed on the divisor only — by_ten itself would also fire on the
+    dividend (30/5 has max_operand 30) and gut the legit pool.
+    """
+    b = params.get("b")
+    return isinstance(b, (int, float)) and b != 0 and b % 10 == 0
+
+
 @rule("eleven_times_small")
 def _eleven_times_small(skill_id: str, params: dict) -> bool:
     """11 x single-digit is a digit-doubling trick, not recall practice.

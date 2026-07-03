@@ -36,6 +36,10 @@ android {
             }
         }
         release {
+            // Signed with the same (debug) key as dev builds so release APKs
+            // install over them without an uninstall/data wipe. Fine for a
+            // personal sideloaded app; revisit before any store distribution.
+            signingConfig hasCiDebugKeystore ? signingConfigs.ciDebug : signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

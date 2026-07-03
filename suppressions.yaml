@@ -1,5 +1,14 @@
 # Active suppression rules per skill. Names must exist in
 # server/suppressions.py REGISTRY.
+#
+# When you add or change rules here (or in the registry):
+#   1. Also drop the newly-suppressed values from the generator's sampling
+#      pools (server/generator.py) — leaving them in just burns the
+#      suppression retry budget (see the multiplication L1 comment there).
+#   2. Devices keep serving their cached offline seed packs, which were
+#      generated under the OLD rules. Trigger a refresh for good measure:
+#      tap "refresh pack" on the device (home screen), or wait for the
+#      auto top-up. New rules apply to online prompts immediately.
 
 addition:
   - single_digit_small
@@ -22,6 +31,7 @@ multiplication:
 
 division:
   - small_operand        # /1 and /2 are instant recall, not practice
+  - ten_divisor          # /10, /20, ... are decimal shifts
 
 weather_math:
   - trivial_diff

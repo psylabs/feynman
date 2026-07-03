@@ -283,7 +283,7 @@
             refreshBtn.disabled = true;
             refreshBtn.textContent = "refreshing…";
             try {
-              await window.feynmanOffline.refreshSeedPack(userId, 40);
+              await window.feynmanOffline.refreshSeedPack(userId, 20);
               const s2 = await window.feynmanOffline.stats(userId);
               el.textContent = `${s2.seedRemaining} offline prompts · ${s2.outboxPending} pending`;
               refreshBtn.textContent = "pack refreshed ✓";
@@ -2136,4 +2136,11 @@
   });
 
   refreshStartScreen();
+
+  // Boot timing: ms from webview navigation start to this script finishing.
+  // If this stays small while launches feel slow, the wait is native app
+  // start (process + webview creation), not the web layer.
+  if (typeof performance !== "undefined") {
+    logClientEvent("boot_timing", { interactive_ms: Math.round(performance.now()) });
+  }
 })();

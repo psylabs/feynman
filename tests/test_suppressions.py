@@ -77,6 +77,20 @@ class SuppressionRuleTests(unittest.TestCase):
             f = result["parameters"]["features"]
             self.assertGreater(f["min_operand"], 2, f"min_operand={f['min_operand']} should be suppressed")
 
+    def test_generate_division_never_divides_by_ten(self):
+        # regression (2026-07-02 user report): /10 kept appearing. Rule must
+        # override scheduler targets too — a due FSRS item for 30/10 gets
+        # re-sampled, not re-drilled.
+        from server import suppressions as s
+        s.load_active(force=True)
+        for _ in range(20):
+            result = generator.generate("division", target={"a": 30, "b": 10})
+            self.assertNotEqual(result["parameters"]["b"], 10, "target /10 must be re-sampled")
+        for lvl in (1, 2, 3):
+            for _ in range(30):
+                b = generator.generate("division", level=lvl)["parameters"]["b"]
+                self.assertTrue(b > 2 and b % 10 != 0, f"level {lvl} emitted trivial divisor {b}")
+
     def test_generate_subtraction_never_returns_small_b(self):
         # integration: active suppressions prevent b<=2 from being generated
         from server import suppressions as s
