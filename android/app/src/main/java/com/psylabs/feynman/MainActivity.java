@@ -2,6 +2,7 @@ package com.psylabs.feynman;
 
 import android.graphics.Color;
 import android.os.Bundle;
+import android.view.KeyEvent;
 import android.view.View;
 
 import androidx.core.graphics.Insets;
@@ -14,6 +15,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(PttKeysPlugin.class);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(Color.TRANSPARENT);
         getWindow().setNavigationBarColor(Color.TRANSPARENT);
@@ -27,5 +29,14 @@ public class MainActivity extends BridgeActivity {
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(content);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (getBridge() != null) {
+            var handle = getBridge().getPlugin("PttKeys");
+            if (handle != null && ((PttKeysPlugin) handle.getInstance()).handleKey(event)) return true;
+        }
+        return super.dispatchKeyEvent(event);
     }
 }

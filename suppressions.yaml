@@ -20,6 +20,9 @@ multiplication:
   - small_operand        # x1 and x2 tables are instant recall, not practice
   - eleven_times_small   # x11 only counts from 11x10 up
 
+division:
+  - small_operand        # /1 and /2 are instant recall, not practice
+
 weather_math:
   - trivial_diff
   - round_diff

@@ -363,6 +363,16 @@ test("typed skip queues a skipped attempt without grading a numeric answer", () 
   assert.equal(built.attempt.correct, false);
 });
 
+test("offline voice answers parse spoken numbers and tag answer_mode voice_offline", () => {
+  const { buildOfflineAttempt } = loadOfflineModule();
+  const seed = { ...samplePack().items[0], expected: 42 };
+
+  const built = buildOfflineAttempt(seed, "forty two", {}, "voice_offline");
+
+  assert.equal(built.attempt.parsed_answer, 42);
+  assert.equal(built.attempt.answer_mode, "voice_offline");
+});
+
 test("seed refresh stores prompt audio data for airplane mode playback", async () => {
   const { createFeynmanOfflineController } = loadOfflineModule();
   let savedPack = null;

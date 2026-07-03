@@ -13,6 +13,7 @@
     "@capgo/cli": "^8.12.5"
   },
   "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
     "@capacitor-community/sqlite": "^8.1.0",
     "@capacitor/android": "^8.4.0",
     "@capacitor/core": "^8.4.0",

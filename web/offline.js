@@ -479,21 +479,66 @@
     };
   }
 
+  var SMALL = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7,
+    eight:8, nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14,
+    fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19, twenty:20,
+    thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90 };
+
+  function wordsToNumber(text) {
+    var tokens = text.replace(/-/g, " ").split(/\s+/).filter(function (t) { return t && t !== "and"; });
+    if (!tokens.length) return null;
+    var neg = tokens[0] === "negative" || tokens[0] === "minus";
+    if (neg) tokens.shift();
+    var total = 0, current = 0, seen = false, i, t;
+    for (i = 0; i < tokens.length; i++) {
+      t = tokens[i];
+      if (t === "point") break;
+      if (t === "a") { if (!current) current = 1; }
+      else if (t in SMALL) { current += SMALL[t]; seen = true; }
+      else if (t === "hundred") { current = (current || 1) * 100; seen = true; }
+      else if (t === "thousand") { total += (current || 1) * 1000; current = 0; seen = true; }
+      else if (t === "million") { total += (current || 1) * 1000000; current = 0; seen = true; }
+      else return null;
+    }
+    var value = total + current;
+    if (i < tokens.length && tokens[i] === "point") {
+      var frac = "";
+      for (var j = i + 1; j < tokens.length; j++) {
+        t = tokens[j];
+        if (!(t in SMALL) || SMALL[t] > 9) return null;
+        frac += SMALL[t];
+      }
+      if (!frac) return null;
+      value = parseFloat(String(value) + "." + frac);
+      seen = true;
+    }
+    if (!seen) return null;
+    return neg ? -value : value;
+  }
+
   function parseTypedAnswer(raw) {
     raw = (raw || "").trim();
     if (!raw) return { value: null, skipped: false, raw: raw };
     var cleaned = raw.toLowerCase();
+    cleaned = cleaned.replace(/[$,%]/g, "").replace(/,/g, "");
+    // Dictation-mode recognizers sometimes emit trailing sentence punctuation
+    // ("forty two.", "seven point five?"); strip it before the skip-phrase check
+    // and digit-regex and word-parsing attempts below, or a trailing "." / "?"
+    // glued onto the last token makes both fail to match.
+    cleaned = cleaned.replace(/[.?!]+$/, "").trim();
     if (/^(skip|pass|don'?t know|no idea|not sure|dunno)$/.test(cleaned)) {
       return { value: null, skipped: true, raw: raw };
     }
-    cleaned = cleaned.replace(/[$,%]/g, "").replace(/,/g, "");
     var match = cleaned.match(/-?\d+(?:\.\d+)?/);
-    if (!match) return { value: null, skipped: false, raw: raw };
+    if (!match) {
+      var wordValue = wordsToNumber(cleaned);
+      return { value: wordValue, skipped: false, raw: raw };
+    }
     var n = Number(match[0]);
     return { value: Number.isFinite(n) ? n : null, skipped: false, raw: raw };
   }
 
-  function buildOfflineAttempt(seed, rawAnswer, timing) {
+  function buildOfflineAttempt(seed, rawAnswer, timing, mode) {
     timing = timing || {};
     var parsed = parseTypedAnswer(rawAnswer);
     var expected = numberOrNull(seed.expected_answer ?? seed.expected);
@@ -508,7 +553,7 @@
       prompt_text: seed.prompt_text,
       expected_answer: expected,
       parsed_answer: parsed.value,
-      answer_mode: "typed",
+      answer_mode: mode || "typed",
       raw_transcript: parsed.raw,
       skipped: parsed.skipped,
       correct: verdict.correct,

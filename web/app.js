@@ -42,6 +42,7 @@
   async function showScreen(id) {
     // Leaving an active session via nav: end it cleanly.
     if (sessionId && id !== "screen-session" && id !== "screen-review") {
+      setSessionActive(false);
       releaseMicStream("nav");
       if (!offlineSession) {
         try {
@@ -503,18 +504,37 @@
       }
       backgroundOfflineSync(user.id);
     }
+    // Airplane mode leaves the Tailscale interface up, so the API fetch
+    // black-holes for ~2 minutes of TCP retries instead of failing fast.
+    // Check connectivity first, and cap the fetch at 5s for the
+    // connected-but-server-unreachable case (off the tailnet).
+    let connected = true;
+    try {
+      const net = window.Capacitor?.Plugins?.Network;
+      if (net) connected = (await net.getStatus()).connected !== false;
+    } catch {}
+    if (!connected) {
+      if (mode === "drill") return startOfflineSession(user, targetQuestions || 5);
+      return alert("Could not reach the backend.");
+    }
     let r;
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 5000);
     try {
       r = await fetch("/session/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: abort.signal,
       }).then((res) => res.json());
     } catch {
       if (mode === "drill") return startOfflineSession(user, targetQuestions || 5);
       return alert("Could not reach the backend.");
+    } finally {
+      clearTimeout(abortTimer);
     }
     if (r.detail) return alert(r.detail);
+    setSessionActive(true);
     resetOfflineSession();
     sessionId = r.session_id;
     currentQid = null;
@@ -545,6 +565,7 @@
       return alert("Offline storage is not ready.");
     }
 
+    setSessionActive(true);
     resetOfflineSession();
     releaseMicStream("offline_start");
     offlineSession = true;
@@ -646,7 +667,9 @@
     $("typed-answer-input").disabled = !!disabled;
     $("btn-submit-typed").disabled = !!disabled;
     $("btn-skip-typed").disabled = !!disabled;
-    if (!disabled) setTimeout(() => $("typed-answer-input").focus(), 0);
+    // Offline answers are voice-first: auto-focusing here pops the Android
+    // keyboard over the drill. The field still works on tap.
+    if (!disabled && !offlineSession) setTimeout(() => $("typed-answer-input").focus(), 0);
   }
 
   async function continueOfflineSession() {
@@ -666,6 +689,7 @@
       $("status").textContent = "Offline storage is not ready.";
       return;
     }
+    setSessionActive(true);
     offlineSession = true;
     offlineUserId = user.id;
     releaseMicStream("offline_continue");
@@ -720,6 +744,10 @@
       promptEndTs = Date.now() / 1000;
       $("status").textContent = message;
       showTypedAnswer(false);
+      if (nativeSttReady) {
+        $("btn-ptt").classList.remove("hidden");
+        $("btn-ptt").disabled = false;
+      }
     };
 
     if (!audioSrc) {
@@ -1096,7 +1124,7 @@
     $("btn-next").classList.remove("hidden");
   }
 
-  async function submitTypedAnswer(rawAnswer) {
+  async function submitTypedAnswer(rawAnswer, mode) {
     if (!offlineSession || !offlineQuestion) return;
     rawAnswer = (rawAnswer || "").trim();
     if (!rawAnswer) {
@@ -1112,7 +1140,7 @@
       promptEndTs: promptEndTs || onset,
       onsetTs: onset,
       resolutionTs,
-    });
+    }, mode);
 
     try {
       built.attempt.local_session_id = sessionId;
@@ -1182,6 +1210,7 @@
 
   async function endSession() {
     if (!sessionId) return;
+    setSessionActive(false);
     releaseMicStream("session_end");
     if (offlineSession) {
       const userId = offlineUserId;
@@ -1868,46 +1897,182 @@
   $("btn-skip-typed")?.addEventListener("click", () => submitTypedAnswer("skip"));
   $("btn-skip-voice")?.addEventListener("click", () => submitVoiceSkip());
 
+  // Offline on-device speech recognition. Feature-detected: an OTA JS bundle
+  // may ship ahead of the native APK that bundles this plugin, so every use
+  // is guarded and failing to detect it just falls back to typed-only offline
+  // answers (see nextOfflineQuestion's `enable` callback).
+  const Speech = window.Capacitor?.Plugins?.SpeechRecognition || null;
+  let nativeSttReady = false;
+  (async () => { try { nativeSttReady = Speech && (await Speech.available()).available === true; } catch {} })();
+
+  // Event semantics (verified against the vendored plugin source, see
+  // node_modules/@capacitor-community/speech-recognition/android/src/main/java/.../SpeechRecognition.java):
+  //  - start({partialResults:true, popup:false}) resolves the JS promise the
+  //    instant native listening begins (line 198-200: `if (partialResults)
+  //    call.resolve();`), *before* any speech is recognized. It carries no
+  //    transcript.
+  //  - Every recognized chunk — interim AND the final one — arrives via the
+  //    "partialResults" listener event: interim chunks from onPartialResults
+  //    (line 313-325), the final chunk from onResults (line 292-306, which
+  //    routes through `notifyListeners("partialResults", ret)` at line 304
+  //    whenever partialResults is true). There is no separate "final" event;
+  //    the last "partialResults" event to arrive *is* the final transcript.
+  //  - stop() (line 87-94) only ever calls call.reject() on a thrown
+  //    exception; on the normal path it posts a Runnable and returns without
+  //    ever resolving the call. Awaiting it bare hangs forever.
+  //  - The "listeningState" event fires "started" from onBeginningOfSpeech
+  //    (line 244-255) and "stopped" from onEndOfSpeech (line 263-279).
+  //    onEndOfSpeech consistently fires before the final onResults, so
+  //    "stopped" is a reliable (if not sufficient on its own) signal that the
+  //    final partialResults event is imminent — hence the grace window below.
+  let sttPartial = "";
+  let sttSession = 0;
+  let sttStoppedPromise = Promise.resolve();
+  // Set (to the rejection message) when Speech.start() itself fails to
+  // launch a listening session — e.g. RECORD_AUDIO permission missing. Reset
+  // per press cycle. Checked by offlineVoiceRelease to short-circuit its
+  // wait (there is no listening session to wait on) and to surface a
+  // permission-specific status instead of the generic "didn't catch that".
+  let sttStartError = null;
+  function offlineVoicePress() {
+    const session = ++sttSession;
+    sttPartial = "";
+    sttStartError = null;
+    $("btn-ptt").classList.add("recording"); $("btn-ptt").textContent = "Recording…";
+    Speech.removeAllListeners();
+    let resolveStopped;
+    sttStoppedPromise = new Promise((resolve) => { resolveStopped = resolve; });
+    Speech.addListener("partialResults", (d) => {
+      if (session !== sttSession) return; // stale event from a prior press cycle
+      if (d?.matches?.length) sttPartial = d.matches[0];
+    });
+    Speech.addListener("listeningState", (d) => {
+      if (session !== sttSession) return;
+      if (d?.status === "stopped") resolveStopped();
+    });
+    Speech.start({ language: "en-US", partialResults: true, popup: false }).catch((err) => {
+      if (session !== sttSession) return; // stale rejection from a prior press cycle
+      sttStartError = String(err?.message || err || "");
+      logClientEvent("offline_stt_start_error", { message: sttStartError });
+      resolveStopped(); // short-circuit release's wait — no listening session ever started
+    });
+  }
+  async function offlineVoiceRelease() {
+    $("btn-ptt").classList.remove("recording"); $("btn-ptt").textContent = "Press & hold to answer";
+    const session = sttSession;
+    Speech.stop().catch(() => {}); // never await: native stop() never resolves on success
+    if (!sttStartError) {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      await Promise.race([
+        sttStoppedPromise.then(() => wait(300)), // grace window for the final partialResults event
+        wait(2000), // hard cap so release can never hang
+      ]);
+    }
+    if (session !== sttSession) return; // a new press cycle started while we waited
+    if (sttStartError) {
+      // The vendored plugin rejects with "Missing permission" when
+      // RECORD_AUDIO isn't granted; surface that distinctly rather than the
+      // generic no-transcript message. No permission-request flow here —
+      // just point the user at app settings.
+      $("status").textContent = /missing permission/i.test(sttStartError)
+        ? "Mic permission needed — check app settings."
+        : "Didn't catch that — try again or type.";
+      sttPartial = "";
+      return;
+    }
+    const transcript = sttPartial.trim();
+    sttPartial = ""; // never let a transcript survive into a later press cycle
+    if (!transcript) { $("status").textContent = "Didn't catch that — try again or type."; return; }
+    submitTypedAnswer(transcript, "voice_offline");
+  }
+
+  // Dispatcher: pttHeld is set true only when a press actually passed its
+  // guard (button not disabled) and dispatched a start path, and is
+  // consumed (checked + reset) by the matching release. This closes a ghost-
+  // submit hole: hardware pttUp calls pttRelease() unconditionally with no
+  // way to know whether the paired pttDown was dropped by the disabled
+  // check (e.g. a volume-down tap lands while #btn-ptt is disabled during
+  // the next question's prompt audio) — without the guard, release would
+  // find the stale sttPartial/recording state from a previous answer and
+  // submit it against the new question. It also makes a second release
+  // event for the same press (pointerup followed by pointercancel, or a
+  // hardware key event racing a pointer event) a no-op: the first call
+  // consumes pttHeld, the second early-returns.
+  let pttHeld = false;
+  function pttPress() {
+    if ($("btn-ptt").disabled) return;
+    pttHeld = true;
+    if (offlineSession && nativeSttReady) return offlineVoicePress();
+    startRecording();
+  }
+  function pttRelease() {
+    if (!pttHeld) return;
+    pttHeld = false;
+    if (offlineSession && nativeSttReady) return offlineVoiceRelease();
+    stopRecording();
+  }
+
   const ptt = $("btn-ptt");
   ptt.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     try { ptt.setPointerCapture(e.pointerId); } catch {}
-    startRecording();
+    pttPress();
   });
   ptt.addEventListener("pointerup", (e) => {
     e.preventDefault();
     try { ptt.releasePointerCapture(e.pointerId); } catch {}
-    stopRecording();
+    pttRelease();
   });
-  ptt.addEventListener("pointercancel", () => stopRecording());
+  ptt.addEventListener("pointercancel", () => pttRelease());
   // Block the long-press context menu on Android.
   ptt.addEventListener("contextmenu", (e) => e.preventDefault());
 
   let spaceDown = false;
-  let volumeKeyDown = false;
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !spaceDown && !$("btn-ptt").disabled) {
       e.preventDefault();
       spaceDown = true;
-      startRecording();
-    }
-    // Volume keys work as PTT on Android Chrome when a non-input element has focus.
-    if ((e.code === "AudioVolumeUp" || e.code === "AudioVolumeDown") && !$("btn-ptt").disabled) {
-      e.preventDefault();
-      if (!volumeKeyDown) { volumeKeyDown = true; startRecording(); }
+      pttPress();
     }
   });
   window.addEventListener("keyup", (e) => {
     if (e.code === "Space" && spaceDown) {
       e.preventDefault();
       spaceDown = false;
-      stopRecording();
+      pttRelease();
     }
-    if (e.code === "AudioVolumeUp" || e.code === "AudioVolumeDown") {
-      e.preventDefault();
-      volumeKeyDown = false;
-      stopRecording();
+  });
+
+  const PttKeys = window.Capacitor?.Plugins?.PttKeys || null;
+  if (PttKeys) {
+    PttKeys.addListener("pttDown", () => { if (!$("btn-ptt").disabled) pttPress(); });
+    PttKeys.addListener("pttUp", () => pttRelease());
+  }
+  let sessionActive = false;
+  function setSessionActive(on) {
+    sessionActive = !!on;
+    if (!on) {
+      pttHeld = false;
+      sttPartial = "";
     }
+    PttKeys?.setArmed({ armed: sessionActive });
+    PttKeys?.setKeepAwake({ on: sessionActive });
+  }
+  // The native plugin instance survives a JS-only reload (e.g. an OTA bundle
+  // applying mid-session), so a previous session's "armed" flag can be left
+  // set with no session actually active, swallowing volume-down presses.
+  // Disarm once at boot; harmless no-op on old APKs without this plugin and
+  // when no session was previously active.
+  setSessionActive(false);
+  // Android recreates the activity on cover-screen/main-screen transitions
+  // (e.g. Moto Razr), which resets the native plugin's armed/keep-awake
+  // state. visibilitychange is the only re-arm signal available here —
+  // Capacitor's bridge does not dispatch a "resume" event on `document` (no
+  // @capacitor/app plugin is installed, and the native bridge only exposes
+  // its own lifecycle callbacks, not a document-level DOM event). This must
+  // be verified on the Razr flip transition during device testing.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") setSessionActive(sessionActive);
   });
 
   $("btn-quick-drill").addEventListener("click", () => startSession("drill", 5));

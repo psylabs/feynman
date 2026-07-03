@@ -67,6 +67,16 @@ class SuppressionRuleTests(unittest.TestCase):
         self.assertTrue(suppressions.REGISTRY["subtract_zero"]("subtraction", p))
         self.assertTrue(suppressions.REGISTRY["subtract_zero"]("addition", p))
 
+    def test_generate_division_never_divides_by_small(self):
+        # integration: division small_operand suppression blocks /1 and /2
+        from server import suppressions as s
+        s.load_active(force=True)
+        for _ in range(50):
+            # divisor 2 lives in the level-1 pool
+            result = generator.generate("division", level=1)
+            f = result["parameters"]["features"]
+            self.assertGreater(f["min_operand"], 2, f"min_operand={f['min_operand']} should be suppressed")
+
     def test_generate_subtraction_never_returns_small_b(self):
         # integration: active suppressions prevent b<=2 from being generated
         from server import suppressions as s
