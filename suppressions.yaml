@@ -26,11 +26,10 @@ subtraction:
 
 multiplication:
   - by_ten
-  - small_operand        # x1 and x2 tables are instant recall, not practice
-  - eleven_times_small   # x11 only counts from 11x10 up
+  - trivial_value        # any operand or the product <= 5 or 10/11 (2026-07-04)
 
 division:
-  - small_operand        # /1 and /2 are instant recall, not practice
+  - trivial_value        # any of divisor/dividend/quotient <= 5 or 10/11 (2026-07-04)
   - ten_divisor          # /10, /20, ... are decimal shifts
 
 weather_math:

@@ -113,10 +113,28 @@ def _eleven_times_small(skill_id: str, params: dict) -> bool:
 
     User rule (2026-07-02): for the x11 table, only 11x10 and up count.
     11x11 and 11x12 have min_operand == 11, so they survive.
+
+    Superseded by ``trivial_value`` (2026-07-04), which treats any 11 as
+    trivial. Kept registered for skills that don't activate the newer rule.
     """
     f = _f(params)
     m, M = f.get("min_operand"), f.get("max_operand")
     return M == 11 and m is not None and m < 10
+
+
+# User rule (2026-07-04): a fact is too simple when ANY value in it — either
+# operand or the result — is a small number or 10/11 (skip counting, decimal
+# shifts, digit-doubling). Small means <= 5.
+_TRIVIAL_EXTRA = frozenset({10, 11})
+
+
+@rule("trivial_value")
+def _trivial_value(skill_id: str, params: dict) -> bool:
+    a, b = params.get("a"), params.get("b")
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)) or not b:
+        return False
+    result = a / b if skill_id == "division" else a * b
+    return any(v <= 5 or v in _TRIVIAL_EXTRA for v in (a, b, result))
 
 
 # ---- loader ---------------------------------------------------------------

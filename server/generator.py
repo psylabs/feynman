@@ -206,22 +206,21 @@ def _gen_multiplication(level: int, target: dict | None = None) -> dict:
         a, b = int(target["a"]), int(target["b"])
     else:
         if level == 1:
-            # 2/10/11-with-small-cofactor are suppressed (2026-07-02 rules);
-            # keeping them here just burned the suppression retry budget and
-            # let the give-up path emit trivial facts. L1 = easiest legit tables.
-            easy_factors = [3, 4, 5]
+            # Factors <= 5 and 10/11 are suppressed (trivial_value, 2026-07-04
+            # rules); keeping them here just burned the suppression retry budget
+            # and let the give-up path emit trivial facts. L1 = easiest legit tables.
+            easy_factors = [6, 7, 8, 9]
             a = random.choice(easy_factors)
-            b = random.randint(3, 12)
-            if random.random() < 0.5:
-                a, b = b, a
+            b = random.choice(easy_factors)
         elif level == 2:
-            hard_factors = [3, 4, 6, 7, 8, 9]
+            hard_factors = [6, 7, 8, 9, 12]
             a = random.choice(hard_factors)
             b = random.choice(hard_factors)
         else:
-            big_factors = [12, 15, 20]
+            # 20 dropped: by_ten suppresses any x20 fact.
+            big_factors = [12, 15]
             a = random.choice(big_factors)
-            b = random.randint(2, 12)
+            b = random.choice([6, 7, 8, 9, 12])
             if random.random() < 0.5:
                 a, b = b, a
     return {
@@ -236,16 +235,16 @@ def _gen_division(level: int, target: dict | None = None) -> dict:
     if target and target.get("a") is not None and target.get("b") is not None:
         a, b = int(target["a"]), int(target["b"])
     else:
-        # /1, /2 (small_operand) and /10, /20 (ten_divisor) are suppressed
-        # (2026-07-02 rules) — dropped from the pools so they don't burn the
-        # suppression retry budget. L1 = easiest legit divisors, mirroring
-        # multiplication's easy_factors.
-        divisors_l1 = [3, 4, 5]
-        divisors_l2 = [3, 4, 6, 7, 8, 9]
-        divisors_l3 = [11, 12, 15]
+        # Divisors/quotients <= 5 and 10/11 are suppressed (trivial_value,
+        # 2026-07-04 rules), /10-style divisors by ten_divisor — dropped from
+        # the pools so they don't burn the suppression retry budget. L1 = easiest
+        # legit divisors, mirroring multiplication's easy_factors.
+        divisors_l1 = [6, 7, 8, 9]
+        divisors_l2 = [6, 7, 8, 9, 12]
+        divisors_l3 = [12, 15]
         pool = {1: divisors_l1, 2: divisors_l2, 3: divisors_l3}.get(level, divisors_l2)
         d = random.choice(pool)
-        q = random.randint(2, 12)
+        q = random.choice([6, 7, 8, 9, 12])
         a, b = d * q, d
     return {
         "prompt": f"What is {a} divided by {b}?",
