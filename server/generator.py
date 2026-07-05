@@ -317,7 +317,10 @@ def _gen_percent_of(level: int, target: dict | None = None) -> dict:
     return {
         "prompt": f"What is {pct} percent of {base}?",
         "expected": expected,
-        "parameters": {"percentage": pct, "base": base, "level": level},
+        "parameters": {
+            "percentage": pct, "base": base, "level": level,
+            "features": bones.compute_features("pct", (pct, base)),
+        },
     }
 
 

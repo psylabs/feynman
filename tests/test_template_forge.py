@@ -512,13 +512,18 @@ class TestValidate(unittest.TestCase):
         )
 
     def test_op_operation_match_accepted(self):
-        """The same addition problem correctly labeled charge_total passes."""
+        """The same addition problem correctly labeled charge_total passes.
+
+        Uses (12, 23, 14), not round-ten (10, 20, 30): 10+20 reduces to (1, 3)
+        after stripping trailing zeros and fails the bones crosses_ten rule
+        (money_arithmetic requires every running-sum step to cross a ten).
+        """
         cand = {
-            "prompt": "You spent $10, $20 and $30 on Monday. What's the total?",
+            "prompt": "You spent $12, $23 and $14 on Monday. What's the total?",
             "skill_id": "money_arithmetic",
             "operation": "charge_total",
             "op": "add_list",
-            "args": [10, 20, 30],
+            "args": [12, 23, 14],
             "source": "test",
         }
         reasons = _validate(cand, set())
@@ -580,6 +585,45 @@ class TestValidate(unittest.TestCase):
         # And the excluded ops must be real grounded operations, otherwise
         # the exclusion is dead code.
         self.assertTrue(_FORGE_EXCLUDED_OPS <= forge.ALL_GROUNDED_OPS)
+
+    # -----------------------------------------------------------------------
+    # bones-features suppression check (Task 7): the forge intake runs the
+    # same features_for_entry + suppressions.matches gate as the runtime
+    # forge validators in money.py/weather.py.
+    # -----------------------------------------------------------------------
+
+    def test_suppressed_features_rejected(self):
+        """A non-crossing weather delta (15, 12) must be rejected — same
+        doctrine as the money.py/weather.py forge validators."""
+        cand = {
+            "prompt": "High 15, low 12. What's the range?",
+            "skill_id": "weather_math",
+            "operation": "daily_range",
+            "op": "delta",
+            "args": [15, 12],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertTrue(
+            any(r.startswith("suppressed:") for r in reasons),
+            f"Expected suppressed reason, got: {reasons}",
+        )
+
+    def test_non_suppressed_crossing_features_accepted(self):
+        """The crossing counterpart (21, 3) passes the suppression check."""
+        cand = {
+            "prompt": "High 21, low 3. What's the range?",
+            "skill_id": "weather_math",
+            "operation": "daily_range",
+            "op": "delta",
+            "args": [21, 3],
+            "source": "test",
+        }
+        reasons = _validate(cand, set())
+        self.assertFalse(
+            any(r.startswith("suppressed:") for r in reasons),
+            f"Did not expect suppressed reason, got: {reasons}",
+        )
 
     def test_ugly_answer_zero_rejected(self):
         """delta with equal args (result = 0) must be rejected as ugly_answer."""

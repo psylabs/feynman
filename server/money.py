@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-from server import bones, forge_ops, forge_pool
+from server import bones, forge_ops, forge_pool, suppressions
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,24 @@ EXCLUDED_PRACTICE_PREFIXES = (
 # These operations pull real recent Plaid transactions (merchant/amount/recency);
 # a canned pool entry can't provide that live grounding — never serve from the pool.
 _FORGE_EXCLUDED_OPS = frozenset({"restaurant_tip_15", "split_bill"})
+
+
+def _forge_validator(skill_id: str):
+    """Build a forge_pool validator: entry passes when its bones features are
+    mappable AND don't match an active suppression rule for ``skill_id``.
+
+    Active rules are loaded once per call (mirrors the generator.py samplers'
+    "load active once per call" pattern) rather than once per candidate.
+    """
+    active = suppressions.load_active()
+
+    def _valid(entry: dict) -> bool:
+        features = forge_ops.features_for_entry(entry)
+        return features is not None and not suppressions.matches(
+            skill_id, {"features": features}, active,
+        )
+
+    return _valid
 
 
 def load_transactions(path: Path = DEFAULT_CSV) -> list[dict]:
@@ -126,7 +144,9 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
     # Skip for live-Plaid ops (need real merchant/recency) or pinned targets.
     entry = None
     if operation not in _FORGE_EXCLUDED_OPS and forge_pool.eligible(target):
-        entry = forge_pool.take("money_arithmetic", operation)
+        entry = forge_pool.take(
+            "money_arithmetic", operation, validator=_forge_validator("money_arithmetic"),
+        )
     if entry is not None:
         try:
             expected = forge_ops.OPS[entry["op"]](*entry["args"])
@@ -138,6 +158,7 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
                     "source": "forge",
                     "forge_id": entry["id"],
                     "level": (target or {}).get("level"),
+                    "features": forge_ops.features_for_entry(entry),
                 },
             }
         except Exception:

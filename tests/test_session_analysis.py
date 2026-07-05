@@ -262,6 +262,18 @@ class PatternAnalysisTests(unittest.TestCase):
         results = session_analysis.pattern_analysis(attempts)
         self.assertEqual(results, [])
 
+    def test_excludes_crosses_ten_dead_dimension(self):
+        """crosses_ten is rule-constant True for the skills that stamp it
+        (the active suppression gate already enforces it) — a dead grouping
+        dimension that must never surface as a friction pattern, even when
+        (as here) it happens to correlate with latency."""
+        attempts = (
+            [self._attempt("subtraction", 1000, crosses_ten=False) for _ in range(10)] +
+            [self._attempt("subtraction", 4000, crosses_ten=True) for _ in range(8)]
+        )
+        results = session_analysis.pattern_analysis(attempts)
+        self.assertTrue(all(r["feature_key"] != "crosses_ten" for r in results))
+
     def test_returns_at_most_3(self):
         attempts = []
         for i in range(4):

@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from server import bones, forge_ops, forge_pool
+from server import bones, forge_ops, forge_pool, suppressions
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,23 @@ def load_locations(path: Path = DEFAULT_LOCATIONS) -> list[dict]:
     return out or [{"name": "NYC", "lat": 40.7128, "lon": -74.0060}]
 
 
+def _forge_validator(skill_id: str):
+    """Build a forge_pool validator: entry passes when its bones features are
+    mappable AND don't match an active suppression rule for ``skill_id``.
+
+    Active rules are loaded once per call, not once per candidate.
+    """
+    active = suppressions.load_active()
+
+    def _valid(entry: dict) -> bool:
+        features = forge_ops.features_for_entry(entry)
+        return features is not None and not suppressions.matches(
+            skill_id, {"features": features}, active,
+        )
+
+    return _valid
+
+
 def load_forecast(location: dict) -> dict:
     """Fetch + cache 7-day daily summary for a single location.
 
@@ -84,7 +101,10 @@ def generate_problem(target: dict | None = None) -> dict:
     )
     # Try the forge pool first — LLM-generated prompts grounded on real data.
     # Skip when target carries pinned keys the pool can't honor.
-    entry = forge_pool.take("weather_math", op) if forge_pool.eligible(target) else None
+    entry = (
+        forge_pool.take("weather_math", op, validator=_forge_validator("weather_math"))
+        if forge_pool.eligible(target) else None
+    )
     if entry is not None:
         try:
             expected = forge_ops.OPS[entry["op"]](*entry["args"])
@@ -96,6 +116,7 @@ def generate_problem(target: dict | None = None) -> dict:
                     "source": "forge",
                     "forge_id": entry["id"],
                     "level": (target or {}).get("level"),
+                    "features": forge_ops.features_for_entry(entry),
                 },
             }
         except Exception:

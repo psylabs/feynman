@@ -27,7 +27,8 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from server.forge_ops import OPS
+from server import suppressions
+from server.forge_ops import OPS, features_for_entry
 from server.money import (
     _FORGE_EXCLUDED_OPS,
     _swag,
@@ -406,6 +407,20 @@ def _validate(
             if not args_floats.issubset(skill_ctx):
                 missing = args_floats - skill_ctx
                 reasons.append(f"args_not_in_context:{sorted(missing)}")
+
+    # 14. Bones-features suppression check: same doctrine as the money.py /
+    #     weather.py forge validators (server.forge_ops.features_for_entry +
+    #     server.suppressions.matches) — a candidate whose bones features
+    #     match an active suppression rule for this skill_id is rejected at
+    #     intake, so the pool never accumulates entries the runtime would
+    #     just mark invalid later.
+    features = features_for_entry(candidate)
+    if features is None:
+        reasons.append("features_unmappable")
+    else:
+        rule_name = suppressions.matches(skill_id, {"features": features}, suppressions.load_active())
+        if rule_name:
+            reasons.append(f"suppressed:{rule_name}")
 
     return reasons
 
