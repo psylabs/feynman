@@ -211,7 +211,12 @@ def build_session_plan(
     # 1. Due reviews, most overdue first. Items >1 day overdue bypass the
     #    recency/cooldown exclusion; excluded_keys always wins.
     active_suppressions = suppressions.load_active()
-    for item in storage.due_items(user_id, now, limit=length * 2):
+    # Fetch headroom for the zombie guard below: suppressed (retired) items
+    # never drain, so they accrete at the head of ORDER BY due_at ASC — a
+    # length*2 window fills with skipped zombies and starves real reviews.
+    # 300 comfortably exceeds the whole item_state table (single-user DB,
+    # ~172 rows), so the guard always sees every real due item; cost nil.
+    for item in storage.due_items(user_id, now, limit=max(length * 2, 300)):
         if len(slots) >= length:
             break
         key = item["item_key"]

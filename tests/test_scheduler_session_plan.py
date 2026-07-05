@@ -571,6 +571,32 @@ class DueLaneSuppressedZombieTests(unittest.TestCase):
             cm.output,
         )
 
+    def test_real_due_item_behind_a_wall_of_zombies_still_gets_a_slot(self):
+        """Zombies never drain, so they accrete at the head of ORDER BY
+        due_at ASC. With a fetch limit of only length*2, enough zombies push
+        every real due item out of the fetch window entirely — the due lane
+        must fetch with enough headroom that a real item sitting behind more
+        than length*2 zombies still lands a slot."""
+        now = time.time()
+        length = 6
+        # More zombies than length*2 (13 > 12), all more overdue than the one
+        # real item, so they fill the entire naive fetch window. Every
+        # mul:2xN fact is suppressed (operand 2 <= 5, trivial_value).
+        zombies = [
+            {"item_key": f"mul:2x{7 + i}", "tier": "primitive",
+             "family": f"mul.x{7 + i}", "due_at": now - (100 - i) * 86400}
+            for i in range(length * 2 + 1)
+        ]
+        real = {"item_key": "mul:6x13", "tier": "primitive",
+                "family": "mul.x13", "due_at": now - 5 * 86400}
+        storage = FakeStorage(attempts=_mul_compound_attempts(),
+                              due=zombies + [real])
+        plan = scheduler.build_session_plan(storage, "u", length, _noop)
+        due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
+        self.assertIn("mul:6x13", due_keys)
+        for z in zombies:
+            self.assertNotIn(z["item_key"], due_keys)
+
 
 if __name__ == "__main__":
     unittest.main()
