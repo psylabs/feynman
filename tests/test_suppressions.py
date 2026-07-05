@@ -141,6 +141,34 @@ class WeatherCrossingTests(unittest.TestCase):
                     self.assertTrue(f["crosses_ten"], result["parameters"])
 
 
+class MoneyCrossingTests(unittest.TestCase):
+    """2026-07-05 bones-doctrine: money_arithmetic activates crossing via
+    suppressions.yaml. charge_total/category_difference carry crosses_ten
+    and the generation-side pickers pre-filter for it; tip/split/
+    category_amount/fallback carry no crosses_ten key (present-key gating
+    means the require rule can't fire on them, by design)."""
+
+    def test_generate_money_arithmetic_never_yields_crosses_ten_false(self):
+        from server import money
+        from server import suppressions as s
+        s.load_active(force=True)
+        rows = [
+            {"date": "2026-01-01", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-02", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-01", "payee": "Cross", "category": "Misc", "amount": 8.0},
+            {"date": "2026-01-02", "payee": "Cross", "category": "Misc", "amount": 8.0},
+            {"date": "2026-01-03", "payee": "Cross", "category": "Misc", "amount": 8.0},
+        ]
+        with unittest.mock.patch.object(money, "load_transactions", lambda path=money.DEFAULT_CSV: rows):
+            for _ in range(50):
+                result = generator.generate(
+                    "money_arithmetic", target={"operation": "charge_total"}
+                )
+                f = result["parameters"].get("features")
+                if f is not None and "crosses_ten" in f:
+                    self.assertTrue(f["crosses_ten"], result["parameters"])
+
+
 class SuppressionRuleTests(unittest.TestCase):
     def _params(self, a, b, **extra):
         from server import bones
