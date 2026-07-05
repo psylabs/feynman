@@ -217,21 +217,40 @@ class DueFirstTests(unittest.TestCase):
 
 
 class BootstrapTests(unittest.TestCase):
-    def test_bootstrap_families_exclude_unreachable_x12(self):
-        """mul.x12/div.x12 are unreachable on fresh generation (a fact whose
-        LARGER recalled operand is 12 has max_operand <= 12 and is suppressed
-        by the yaml rule), so bootstrapping them would zombie-schedule: the
-        pinned first-look would always be suppressed and re-sampled, and the
-        family's attempt count could never organically reach 5."""
+    def test_bootstrap_families_cover_the_12_to_19_tables(self):
+        """x12 is back in rotation (2026-07-05, per user): the yaml floor is
+        max_operand <= 11, so 12-anchored facts are legal and the x12
+        families bootstrap normally alongside 13-19."""
         for prefix in ("mul.x", "div.x"):
             tables = sorted(
                 int(f.removeprefix(prefix))
                 for f in scheduler.BOOTSTRAP_FAMILIES
                 if f.startswith(prefix)
             )
-            self.assertEqual(tables, [13, 14, 15, 16, 17, 18, 19], prefix)
+            self.assertEqual(tables, [12, 13, 14, 15, 16, 17, 18, 19], prefix)
         self.assertIn("add.bridge10", scheduler.BOOTSTRAP_FAMILIES)
         self.assertIn("sub.borrow20", scheduler.BOOTSTRAP_FAMILIES)
+
+    def test_x12_bootstrap_fact_lands_in_family_and_clears_rules(self):
+        """A mul.x12/div.x12 first-look must anchor on 12 (partner 6-9, so
+        the larger operand stays 12) and pass the active rule set — otherwise
+        the pinned target would be suppressed and the slot would drift out of
+        the family it was meant to bootstrap."""
+        from server import bones, suppressions
+        active = suppressions.load_active()
+        for _ in range(50):
+            skill_id, fact_key, target = scheduler._bootstrap_fact("mul.x12")
+            self.assertEqual(skill_id, "multiplication")
+            self.assertEqual(max(target["a"], target["b"]), 12, fact_key)
+            params = {**target, "features": bones.compute_features(
+                "*", (target["a"], target["b"]))}
+            self.assertIsNone(suppressions.matches(skill_id, params, active))
+            skill_id, fact_key, target = scheduler._bootstrap_fact("div.x12")
+            self.assertEqual(skill_id, "division")
+            d, q = target["b"], target["a"] // target["b"]
+            self.assertEqual(max(d, q), 12, fact_key)
+            params = {**target, "features": bones.compute_features("/", (d, q))}
+            self.assertIsNone(suppressions.matches(skill_id, params, active))
 
     def test_zero_division_user_gets_bootstrap_slot(self):
         # A user with lots of multiplication but no division: bootstrap must

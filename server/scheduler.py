@@ -148,16 +148,13 @@ SKINS = {
 # The due loop in build_session_plan checks suppressions itself and skips
 # (rather than serves) a due item whose pinned target would be suppressed.
 #
-# x12 is deliberately absent even though 12 stays in MULT_TABLE (it still
-# appears as the smaller operand in the pools; classification always keys on
-# the larger operand): a fact whose LARGER recalled operand is 12 has
-# max_operand <= 12 and is suppressed by the yaml rule, so the x12 families
-# are unreachable on fresh generation — bootstrap slots for them would
-# zombie-schedule (pinned first-look always suppressed, attempt count never
-# organically reaching 5).
+# x12 is back in rotation (2026-07-05, per user): the yaml floor is
+# max_operand <= 11, so a fact anchored on 12 (12x6..12x12, 72/12, ...) is
+# legal and the x12 families bootstrap normally. Classification keys on the
+# larger operand, so x12 facts need a partner <= 12 (see _bootstrap_fact).
 BOOTSTRAP_FAMILIES = (
-    [f"mul.x{n}" for n in (13, 14, 15, 16, 17, 18, 19)]
-    + [f"div.x{n}" for n in (13, 14, 15, 16, 17, 18, 19)]
+    [f"mul.x{n}" for n in (12, 13, 14, 15, 16, 17, 18, 19)]
+    + [f"div.x{n}" for n in (12, 13, 14, 15, 16, 17, 18, 19)]
     + ["add.bridge10", "sub.borrow20"]
 )
 
@@ -441,21 +438,32 @@ def _bootstrap_fact(family: str) -> tuple[str, str, dict | None]:
 
     Partner values are drawn from the same 6/7/8/9/12 "table row" range the
     generator pools use, which always clears suppressions.yaml's
-    ``max_operand<=12`` rule and by_ten/trivial_value: n (13-19, per
-    BOOTSTRAP_FAMILIES) paired with a partner <=12 keeps hi==n, so the served
-    fact actually lands in the family it was meant to bootstrap. The n<=12
-    branch is defensive only — no such family is in BOOTSTRAP_FAMILIES (see
-    the x12 note there) — and pairs with 13-19 so even a stray caller still
-    yields a legal, suppression-clearing fact.
+    ``max_operand<=11`` rule and by_ten/trivial_value: n (12-19, per
+    BOOTSTRAP_FAMILIES) paired with a partner <= n keeps hi==n, so the served
+    fact actually lands in the family it was meant to bootstrap. n==12 pairs
+    with 6-9 only (a 13-19 partner would reclassify the fact into the
+    partner's family). The n<=11 branch is defensive only — no such family
+    is in BOOTSTRAP_FAMILIES — and pairs with 13-19 so even a stray caller
+    still yields a legal, suppression-clearing fact.
     """
     if family.startswith("mul.x"):
         n = int(family.removeprefix("mul.x"))
-        b = random.choice([6, 7, 8, 9, 12]) if n >= 13 else random.choice([13, 14, 15, 16, 17, 18, 19])
+        if n >= 13:
+            b = random.choice([6, 7, 8, 9, 12])
+        elif n == 12:
+            b = random.choice([6, 7, 8, 9])  # keep hi == 12 so the fact lands in x12
+        else:
+            b = random.choice([13, 14, 15, 16, 17, 18, 19])
         lo, hi = sorted((n, b))
         return "multiplication", f"mul:{lo}x{hi}", {"a": n, "b": b}
     if family.startswith("div.x"):
         n = int(family.removeprefix("div.x"))
-        b = random.choice([6, 7, 8, 9, 12]) if n >= 13 else random.choice([13, 14, 15, 16, 17, 18, 19])
+        if n >= 13:
+            b = random.choice([6, 7, 8, 9, 12])
+        elif n == 12:
+            b = random.choice([6, 7, 8, 9])  # keep hi == 12 so the fact lands in x12
+        else:
+            b = random.choice([13, 14, 15, 16, 17, 18, 19])
         lo, hi = sorted((n, b))
         return "division", f"div:{lo}x{hi}", {"a": n * b, "b": n}
     if family == "add.bridge10":

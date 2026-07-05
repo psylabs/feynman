@@ -250,7 +250,7 @@ class RaisedFloorPoolTests(unittest.TestCase):
     """2026-07-05 doctrine: single-digit multiplication/division tables are
     retired. The generator's raw per-level pools (not just generate()'s
     suppress-and-resample safety net) must already clear the full active
-    rule set — max_operand>=13 (suppressions.yaml), trivial_value, by_ten,
+    rule set — max_operand>=12 (suppressions.yaml), trivial_value, by_ten,
     ten_divisor — on every draw, at every level."""
 
     def test_multiplication_pools_clear_active_rules_at_every_level(self):
@@ -264,8 +264,8 @@ class RaisedFloorPoolTests(unittest.TestCase):
                     f"level {level}: {params} matched a suppression rule",
                 )
                 self.assertGreaterEqual(
-                    max(params["a"], params["b"]), 13,
-                    f"level {level}: {params} has max operand < 13",
+                    max(params["a"], params["b"]), 12,
+                    f"level {level}: {params} has max operand < 12",
                 )
 
     def test_division_pools_clear_active_rules_at_every_level(self):
@@ -281,8 +281,8 @@ class RaisedFloorPoolTests(unittest.TestCase):
                 divisor = params["b"]
                 quotient = params["a"] // divisor
                 self.assertGreaterEqual(
-                    max(divisor, quotient), 13,
-                    f"level {level}: {params} has max recalled operand < 13",
+                    max(divisor, quotient), 12,
+                    f"level {level}: {params} has max recalled operand < 12",
                 )
 
 

@@ -229,24 +229,25 @@ def _subtraction_from_hints(level: int, target: dict) -> tuple[int, int]:
 
 
 def _gen_multiplication(level: int, target: dict | None = None) -> dict:
-    """Pools raised to the 13-19 tables (2026-07-05 doctrine: single-digit and
-    10/11/12/15/20 tables are retired — too_easy, flagged dozens of times).
-    Every level pairs at least one operand from 13-19 with a "table row"
-    partner (6-9, or 12-19 at L3), which always clears the active
-    suppression set (max_operand>=13, trivial_value, by_ten) — see
+    """Pools raised to the 12-19 tables (2026-07-05 doctrine: single-digit
+    and 10/11/20 tables are retired — too_easy, flagged dozens of times; 12
+    kept in rotation per user, same day). Every level pairs at least one
+    operand from 12-19 with a "table row" partner (6-9, or 12-19 at L3),
+    which always clears the active suppression set (max_operand>=12,
+    trivial_value, by_ten) — see
     tests/test_suppressions.py::RaisedFloorPoolTests.
     """
     if target and target.get("a") is not None and target.get("b") is not None:
         a, b = int(target["a"]), int(target["b"])
     else:
         if level == 1:
-            a = random.choice([13, 14, 15])
+            a = random.choice([12, 13, 14, 15])
             b = random.choice([6, 7, 8, 9])
         elif level == 2:
-            a = random.choice(range(13, 20))
+            a = random.choice(range(12, 20))
             b = random.choice([6, 7, 8, 9])
         else:
-            a = random.choice(range(13, 20))
+            a = random.choice(range(12, 20))
             b = random.choice(range(12, 20))
         if random.random() < 0.5:
             a, b = b, a
@@ -259,10 +260,10 @@ def _gen_multiplication(level: int, target: dict | None = None) -> dict:
 
 
 def _gen_division(level: int, target: dict | None = None) -> dict:
-    """Pools raised to the 13-19 tables (2026-07-05 doctrine), mirroring
+    """Pools raised to the 12-19 tables (2026-07-05 doctrine), mirroring
     multiplication. ``d`` (divisor) and ``q`` (quotient) are the two recalled
-    facts; every level pairs a 6-9/12 partner with a 13-19 partner, which
-    always clears the active suppression set (max_operand>=13 on the
+    facts; every level pairs a 6-9/12 partner with a 12-19 partner, which
+    always clears the active suppression set (max_operand>=12 on the
     (divisor, quotient) feature pair per Task 3, trivial_value, ten_divisor).
     """
     if target and target.get("a") is not None and target.get("b") is not None:
@@ -270,12 +271,12 @@ def _gen_division(level: int, target: dict | None = None) -> dict:
     else:
         if level == 1:
             d = random.choice([6, 7, 8, 9])
-            q = random.choice([13, 14, 15])
+            q = random.choice([12, 13, 14, 15])
         elif level == 2:
             d = random.choice([6, 7, 8, 9, 12])
-            q = random.choice(range(13, 20))
+            q = random.choice(range(12, 20))
         else:
-            d = random.choice(range(13, 20))
+            d = random.choice(range(12, 20))
             q = random.choice([6, 7, 8, 9, 12])
         a, b = d * q, d
     return {
