@@ -111,6 +111,46 @@ class SuppressionRuleTests(unittest.TestCase):
             self.assertGreater(b, 2, f"b={b} should be suppressed")
 
 
+class RaisedFloorPoolTests(unittest.TestCase):
+    """2026-07-05 doctrine: single-digit multiplication/division tables are
+    retired. The generator's raw per-level pools (not just generate()'s
+    suppress-and-resample safety net) must already clear the full active
+    rule set — max_operand>=13 (suppressions.yaml), trivial_value, by_ten,
+    ten_divisor — on every draw, at every level."""
+
+    def test_multiplication_pools_clear_active_rules_at_every_level(self):
+        active = suppressions.load_active(force=True)
+        for level in (1, 2, 3):
+            for _ in range(100):
+                result = generator._gen_multiplication(level)
+                params = result["parameters"]
+                self.assertIsNone(
+                    suppressions.matches("multiplication", params, active),
+                    f"level {level}: {params} matched a suppression rule",
+                )
+                self.assertGreaterEqual(
+                    max(params["a"], params["b"]), 13,
+                    f"level {level}: {params} has max operand < 13",
+                )
+
+    def test_division_pools_clear_active_rules_at_every_level(self):
+        active = suppressions.load_active(force=True)
+        for level in (1, 2, 3):
+            for _ in range(100):
+                result = generator._gen_division(level)
+                params = result["parameters"]
+                self.assertIsNone(
+                    suppressions.matches("division", params, active),
+                    f"level {level}: {params} matched a suppression rule",
+                )
+                divisor = params["b"]
+                quotient = params["a"] // divisor
+                self.assertGreaterEqual(
+                    max(divisor, quotient), 13,
+                    f"level {level}: {params} has max recalled operand < 13",
+                )
+
+
 def test_load_active_reloads_on_mtime_change(tmp_path, monkeypatch):
     yaml_path = tmp_path / "suppressions.yaml"
     yaml_path.write_text("addition: [by_ten]\n")

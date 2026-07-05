@@ -133,9 +133,19 @@ SKINS = {
 # Primitive foundations we guarantee at least one look at per session until the
 # user has ≥5 attempts in each. Ordered so bootstrap rotation prefers the
 # earliest-listed among equally-untested families (see _pick_bootstrap_family).
+#
+# 2026-07-05 doctrine: raised the floor to the 13-19 tables (taxonomy.MULT_TABLE
+# dropped 0-11 and 20). mul.x7 etc. are retired from this list — any attempts
+# already on record under those families (or under mul.x12/div.x12, which stay
+# in MULT_TABLE for classification but whose max_operand==12 always trips the
+# new suppression floor) are stats the weak-family/bootstrap lanes may still
+# see; a pinned target for one of those families gets suppressed and
+# re-sampled by generate()'s gate rather than served as-is. That drift is
+# accepted (see generator.py/suppressions.yaml) — the re-sampled result still
+# lands in a currently-legal family, it's just not the one that was pinned.
 BOOTSTRAP_FAMILIES = (
-    [f"mul.x{n}" for n in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20)]
-    + [f"div.x{n}" for n in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20)]
+    [f"mul.x{n}" for n in (12, 13, 14, 15, 16, 17, 18, 19)]
+    + [f"div.x{n}" for n in (12, 13, 14, 15, 16, 17, 18, 19)]
     + ["add.bridge10", "sub.borrow20"]
 )
 
@@ -402,15 +412,25 @@ def _bootstrap_slot(family: str, attempts: list[dict], skill_targets: dict) -> d
 
 
 def _bootstrap_fact(family: str) -> tuple[str, str, dict | None]:
-    """Pick a concrete primitive fact representing a bootstrap family."""
+    """Pick a concrete primitive fact representing a bootstrap family.
+
+    Partner values are drawn from the same 6/7/8/9/12 "table row" range the
+    generator pools use, which always clears suppressions.yaml's
+    ``max_operand<=12`` rule and by_ten/trivial_value: n (12-19) paired with a
+    partner <=12 keeps hi==n, so the served fact actually lands in the family
+    it was meant to bootstrap. Family x12 is the one exception — n==12 can
+    never itself clear ``max_operand>=13``, so its partner is drawn from
+    13-19 instead: still a legal, suppression-clearing fact, just credited to
+    a different (currently-legal) family, per the BOOTSTRAP_FAMILIES comment.
+    """
     if family.startswith("mul.x"):
         n = int(family.removeprefix("mul.x"))
-        b = random.randint(2, 12)
+        b = random.choice([13, 14, 15, 16, 17, 18, 19]) if n <= 12 else random.choice([6, 7, 8, 9, 12])
         lo, hi = sorted((n, b))
         return "multiplication", f"mul:{lo}x{hi}", {"a": n, "b": b}
     if family.startswith("div.x"):
         n = int(family.removeprefix("div.x"))
-        b = random.randint(2, 12)
+        b = random.choice([13, 14, 15, 16, 17, 18, 19]) if n <= 12 else random.choice([6, 7, 8, 9, 12])
         lo, hi = sorted((n, b))
         return "division", f"div:{lo}x{hi}", {"a": n * b, "b": n}
     if family == "add.bridge10":

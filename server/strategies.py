@@ -401,6 +401,17 @@ def strat_f_between(p, expected):
 
 # ----------------------------------------------------------- registry
 
+# 2026-07-05: MULT_TABLE was raised to {12..19} (taxonomy.py), retiring
+# mul.x4/x5/x8/x9/x10/x11/x20 as classify() outputs — a fact with both
+# operands <=11 now classifies into one of these three compound buckets (by
+# digit count) instead. Each affected build() below re-verifies the exact
+# operand it targets (e.g. strat_times_9 checks `9 in (a, b)`), so gating on
+# the retired-range buckets is safe: it restores coverage for exactly the
+# facts these strategies used to see, without also matching mul.x12..x19
+# (still-primitive families, handled by their own narrow gates below) or
+# larger compound facts.
+_RETIRED_SMALL_TABLE = ("mul.1dx1d", "mul.2dx1d", "mul.2dx2d")
+
 REGISTRY: list[Strategy] = [
     # subtraction
     Strategy("count_up", ("sub.",), strat_count_up),
@@ -414,15 +425,15 @@ REGISTRY: list[Strategy] = [
     Strategy("compensation_add", ("add.",), strat_compensation_add),
     Strategy("add_tens_then_ones", ("add.",), strat_add_tens_then_ones),
     # multiplication
-    Strategy("times_9", ("mul.x9", "mul.x10", "mul.x11"), strat_times_9),
-    Strategy("times_12", ("mul.x12", "mul.x11"), strat_times_12),
-    Strategy("times_11", ("mul.x11",), strat_times_11),
-    Strategy("times_4", ("mul.x4",), strat_times_4),
-    Strategy("times_5", ("mul.x5",), strat_times_5),
-    Strategy("times_8", ("mul.x8",), strat_times_8),
+    Strategy("times_9", _RETIRED_SMALL_TABLE, strat_times_9),
+    Strategy("times_12", ("mul.x12",), strat_times_12),
+    Strategy("times_11", _RETIRED_SMALL_TABLE, strat_times_11),
+    Strategy("times_4", _RETIRED_SMALL_TABLE, strat_times_4),
+    Strategy("times_5", _RETIRED_SMALL_TABLE, strat_times_5),
+    Strategy("times_8", _RETIRED_SMALL_TABLE, strat_times_8),
     Strategy("times_15", ("mul.x15",), strat_times_15),
-    Strategy("times_20", ("mul.x20",), strat_times_20),
-    Strategy("near_square", ("mul.x9", "mul.x12"), strat_near_square),
+    Strategy("times_20", _RETIRED_SMALL_TABLE, strat_times_20),
+    Strategy("near_square", ("mul.x12",), strat_near_square),
     # division
     Strategy("div_as_inverse", ("div.",), strat_div_as_inverse),
     # percent / money

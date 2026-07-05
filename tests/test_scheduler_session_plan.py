@@ -70,8 +70,8 @@ def _money_attempts(op="split_bill", n=6, correct=0, latency=6000, start=300):
     ]
 
 
-def _mul_primitive_attempts(a=7, b=8, n=6, correct=0, latency=6000, start=400):
-    """Attempts classifying to primitive family 'mul.x8' (key 'mul:7x8')."""
+def _mul_primitive_attempts(a=7, b=13, n=6, correct=0, latency=6000, start=400):
+    """Attempts classifying to primitive family 'mul.x13' (key 'mul:7x13')."""
     return [
         {
             "skill_id": "multiplication",
@@ -270,29 +270,30 @@ class GroundedShareTests(unittest.TestCase):
 class RecentKeyExclusionTests(unittest.TestCase):
     def _due_and_recent(self, due_offset_days):
         now = time.time()
-        # recent attempt classifies to mul:6x7
+        # recent attempt classifies to mul:6x13 (hi=13 clears the raised MULT_TABLE
+        # floor; 6x7 would now classify compound, see docs/2026-07-05 doctrine).
         recent = [{
             "skill_id": "multiplication",
-            "parameters": {"a": 6, "b": 7, "level": 1},
+            "parameters": {"a": 6, "b": 13, "level": 1},
             "correct": 1, "skipped": 0,
             "resolution_latency_ms": 900, "onset_latency_ms": 700,
             "created_at": now,
         }]
         attempts = recent + _mul_compound_attempts()
-        due = [{"item_key": "mul:6x7", "tier": "primitive",
-                "family": "mul.x7", "due_at": now - due_offset_days * 86400}]
+        due = [{"item_key": "mul:6x13", "tier": "primitive",
+                "family": "mul.x13", "due_at": now - due_offset_days * 86400}]
         storage = FakeStorage(attempts=attempts, due=due)
         return scheduler.build_session_plan(storage, "u", 6, _noop)
 
     def test_recent_non_overdue_key_is_excluded(self):
         plan = self._due_and_recent(due_offset_days=0.01)  # ~15 min overdue
         due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
-        self.assertNotIn("mul:6x7", due_keys)
+        self.assertNotIn("mul:6x13", due_keys)
 
     def test_recent_key_included_when_more_than_a_day_overdue(self):
         plan = self._due_and_recent(due_offset_days=2)
         due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
-        self.assertIn("mul:6x7", due_keys)
+        self.assertIn("mul:6x13", due_keys)
 
 
 class ExclusionStubTests(unittest.TestCase):
@@ -497,20 +498,20 @@ class FamilyNamespaceBlockingTests(unittest.TestCase):
         self.assertFalse(slots[0]["role"].endswith("+skin"))
 
     def test_primitive_fact_cooldown_does_not_block_weak_family(self):
-        """Rule d: a cooldown on a single fact (mul:7x8) must NOT block the whole
-        mul.x8 weak family — per-fact cooldowns are due-lane-only."""
+        """Rule d: a cooldown on a single fact (mul:7x13) must NOT block the whole
+        mul.x13 weak family — per-fact cooldowns are due-lane-only."""
         storage = FakeStorageWithExclusions(
-            attempts=_mul_primitive_attempts(a=7, b=8),
-            cooldowns={"mul:7x8"},
+            attempts=_mul_primitive_attempts(a=7, b=13),
+            cooldowns={"mul:7x13"},
         )
         seen = False
         for _ in range(20):
             plan = scheduler.build_session_plan(storage, "u", 6, _noop)
             weak_keys = [s["fact_key"] for s in plan if s["role"].startswith("weak")]
-            if "mul.x8" in weak_keys:
+            if "mul.x13" in weak_keys:
                 seen = True
         self.assertTrue(
-            seen, "mul.x8 weak drills were wrongly blocked by a mul:7x8 cooldown"
+            seen, "mul.x13 weak drills were wrongly blocked by a mul:7x13 cooldown"
         )
 
 

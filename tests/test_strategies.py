@@ -134,13 +134,15 @@ def test_safety_net_drops_a_lying_strategy(monkeypatch):
         return f"honest: the answer is {int(expected)}"
 
     # A registry of one liar: the assert fails, framework must swallow it.
+    # mul.x9 no longer exists (2026-07-05: MULT_TABLE raised to {12..19}), so
+    # this uses mul.x13 (13x7) as the still-classifiable primitive family.
     monkeypatch.setattr(strategies, "REGISTRY",
-                        [Strategy("liar", ("mul.x9",), liar)])
-    assert tips_for("multiplication", {"a": 9, "b": 7}, 63.0, None) == []
+                        [Strategy("liar", ("mul.x13",), liar)])
+    assert tips_for("multiplication", {"a": 13, "b": 7}, 91.0, None) == []
 
     # Same shape without the guard *does* surface — proving the drop above was
     # caused by the failed verification, not by routing.
     monkeypatch.setattr(strategies, "REGISTRY",
-                        [Strategy("honest", ("mul.x9",), honest)])
-    assert tips_for("multiplication", {"a": 9, "b": 7}, 63.0, None) == \
-        ["honest: the answer is 63"]
+                        [Strategy("honest", ("mul.x13",), honest)])
+    assert tips_for("multiplication", {"a": 13, "b": 7}, 91.0, None) == \
+        ["honest: the answer is 91"]

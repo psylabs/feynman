@@ -26,10 +26,14 @@ subtraction:
 multiplication:
   - by_ten
   - trivial_value        # any operand or the product <= 5 or 10/11 (2026-07-04)
+  - {feature: max_operand, lte: 12}   # raise the floor to the 13-19 tables (2026-07-05)
 
 division:
   - trivial_value        # any of divisor/dividend/quotient <= 5 or 10/11 (2026-07-04)
   - ten_divisor          # /10, /20, ... are decimal shifts
+  # max_operand is stamped from (divisor, quotient) — Task 3 — so this reads
+  # "both recalled facts <= 12 is too easy" (2026-07-05)
+  - {feature: max_operand, lte: 12}
 
 weather_math:
   - {feature: abs_diff, lte: 2}
