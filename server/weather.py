@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from server import forge_ops, forge_pool
+from server import bones, forge_ops, forge_pool, suppressions
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,23 @@ def load_locations(path: Path = DEFAULT_LOCATIONS) -> list[dict]:
     return out or [{"name": "NYC", "lat": 40.7128, "lon": -74.0060}]
 
 
+def _forge_validator(skill_id: str):
+    """Build a forge_pool validator: entry passes when its bones features are
+    mappable AND don't match an active suppression rule for ``skill_id``.
+
+    Active rules are loaded once per call, not once per candidate.
+    """
+    active = suppressions.load_active()
+
+    def _valid(entry: dict) -> bool:
+        features = forge_ops.features_for_entry(entry)
+        return features is not None and not suppressions.matches(
+            skill_id, {"features": features}, active,
+        )
+
+    return _valid
+
+
 def load_forecast(location: dict) -> dict:
     """Fetch + cache 7-day daily summary for a single location.
 
@@ -84,7 +101,10 @@ def generate_problem(target: dict | None = None) -> dict:
     )
     # Try the forge pool first — LLM-generated prompts grounded on real data.
     # Skip when target carries pinned keys the pool can't honor.
-    entry = forge_pool.take("weather_math", op) if forge_pool.eligible(target) else None
+    entry = (
+        forge_pool.take("weather_math", op, validator=_forge_validator("weather_math"))
+        if forge_pool.eligible(target) else None
+    )
     if entry is not None:
         try:
             expected = forge_ops.OPS[entry["op"]](*entry["args"])
@@ -96,6 +116,7 @@ def generate_problem(target: dict | None = None) -> dict:
                     "source": "forge",
                     "forge_id": entry["id"],
                     "level": (target or {}).get("level"),
+                    "features": forge_ops.features_for_entry(entry),
                 },
             }
         except Exception:
@@ -145,13 +166,18 @@ def _temp_delta(location: dict, forecast: dict) -> dict:
             "location": location["name"],
             "warmer": warmer,
             "cooler": cooler,
-            "features": _delta_features(warmer, cooler, "temp_delta"),
+            "features": bones.compute_features(
+                "-", (warmer, cooler), endpoints=(warmer, cooler),
+                extra={"operation": "temp_delta"},
+            ),
         },
     }
 
 
 def _daily_range(location: dict, forecast: dict) -> dict:
-    i = _pick_index(forecast)
+    i = _pick_crossing_day(forecast)
+    if i is None:
+        i = _pick_index(forecast)
     hi = int(round(forecast["t_max"][i]))
     lo = int(round(forecast["t_min"][i]))
     if lo > hi:
@@ -168,7 +194,10 @@ def _daily_range(location: dict, forecast: dict) -> dict:
             "location": location["name"],
             "high": hi,
             "low": lo,
-            "features": _delta_features(hi, lo, "daily_range"),
+            "features": bones.compute_features(
+                "-", (hi, lo), endpoints=(hi, lo),
+                extra={"operation": "daily_range"},
+            ),
         },
     }
 
@@ -191,6 +220,9 @@ def _f_to_c_approx(location: dict, forecast: dict) -> dict:
             "source": "open-meteo",
             "location": location["name"],
             "fahrenheit": f,
+            "features": bones.compute_features(
+                "-", (f, 30), extra={"operation": "f_to_c_approx"},
+            ),
         },
     }
 
@@ -218,7 +250,10 @@ def _wind_delta(location: dict, forecast: dict) -> dict:
             "location": location["name"],
             "stronger": stronger,
             "calmer": calmer,
-            "features": _delta_features(stronger, calmer, "wind_delta"),
+            "features": bones.compute_features(
+                "-", (stronger, calmer), endpoints=(stronger, calmer),
+                extra={"operation": "wind_delta"},
+            ),
         },
     }
 
@@ -294,10 +329,13 @@ def _two_distinct_indices(forecast: dict) -> tuple[int, int]:
 
 
 def _pick_distinct_pair(forecast: dict, field: str) -> tuple[int, int, int, int] | None:
-    """Pick two indices whose rounded `field` values differ.
+    """Pick two indices whose rounded `field` values differ AND cross a ten.
 
-    Returns (i, j, a_int, b_int) or None if every pair rounds to the same
-    integer (a flat forecast). Caller falls back to a different op when None.
+    Returns (i, j, a_int, b_int) or None if no pair both rounds to distinct
+    integers and crosses a multiple of ten (a flat-ish forecast). Caller
+    falls back to a different op when None — this pre-filter exists so the
+    generate() suppression gate's retry budget isn't burned on candidates
+    that would just be rejected anyway.
     """
     values = forecast.get(field) or []
     n = len(values)
@@ -308,7 +346,7 @@ def _pick_distinct_pair(forecast: dict, field: str) -> tuple[int, int, int, int]
     random.shuffle(distinct_indices)
     for idx, i in enumerate(distinct_indices):
         for j in distinct_indices[idx + 1:]:
-            if rounded[i] != rounded[j]:
+            if rounded[i] != rounded[j] and bones.crosses_ten(rounded[i], rounded[j]):
                 # Random which gets named "first" so we don't always anchor
                 # on the same calendar day.
                 if random.random() < 0.5:
@@ -317,13 +355,23 @@ def _pick_distinct_pair(forecast: dict, field: str) -> tuple[int, int, int, int]
     return None
 
 
-def _delta_features(a: int, b: int, operation: str) -> dict:
-    return {
-        "abs_diff": abs(a - b),
-        "min_operand": min(a, b),
-        "max_operand": max(a, b),
-        "operation": operation,
-    }
+def _pick_crossing_day(forecast: dict) -> int | None:
+    """Shuffle day indices and return the first whose hi/lo crosses a ten.
+
+    Returns None when no day qualifies; caller falls back to a random pick
+    (today's behavior) so the generate() gate's retry budget isn't burned.
+    """
+    n = len(forecast.get("dates") or [])
+    if n == 0:
+        return None
+    indices = list(range(n))
+    random.shuffle(indices)
+    for i in indices:
+        hi = int(round(forecast["t_max"][i]))
+        lo = int(round(forecast["t_min"][i]))
+        if bones.crosses_ten(hi, lo):
+            return i
+    return None
 
 
 def _day_label(date_str: str) -> str:

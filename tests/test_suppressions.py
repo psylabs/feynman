@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+import unittest.mock
 from server import generator
 from server import suppressions
 
@@ -32,30 +33,173 @@ class FeatureTaggingTests(unittest.TestCase):
         self.assertIn("abs_diff", f)
         self.assertEqual(f["abs_diff"], abs(result["parameters"]["stronger"] - result["parameters"]["calmer"]))
         self.assertEqual(f["operation"], "wind_delta")
+        self.assertIn("crosses_ten", f)
+        self.assertTrue(f["crosses_ten"])
+
+
+class WeatherCrossingTests(unittest.TestCase):
+    """2026-07-05 bones-doctrine: weather deltas stamp crosses_ten via
+    bones.compute_features, and the generation-side pickers pre-filter for
+    it so the suppression gate's retry budget isn't burned."""
+
+    def _loc(self):
+        return {"name": "Test", "lat": 0.0, "lon": 0.0}
+
+    def test_temp_delta_pair_always_crosses_ten(self):
+        from server import weather
+        forecast = weather._fallback_forecast()
+        for _ in range(50):
+            result = weather._temp_delta(self._loc(), forecast)
+            if result["parameters"]["operation"] != "temp_delta":
+                continue  # fell back to daily_range; covered elsewhere
+            f = result["parameters"]["features"]
+            self.assertTrue(f["crosses_ten"], f)
+
+    def test_wind_delta_pair_always_crosses_ten(self):
+        from server import weather
+        forecast = weather._fallback_forecast()
+        for _ in range(50):
+            result = weather._wind_delta(self._loc(), forecast)
+            if result["parameters"]["operation"] != "wind_delta":
+                continue
+            f = result["parameters"]["features"]
+            self.assertTrue(f["crosses_ten"], f)
+
+    def test_daily_range_always_crosses_ten_on_fallback_forecast(self):
+        # Every day in _fallback_forecast has a hi/lo spread that crosses a
+        # ten, so the crossing-day picker should always find one.
+        from server import weather
+        forecast = weather._fallback_forecast()
+        for _ in range(50):
+            result = weather._daily_range(self._loc(), forecast)
+            f = result["parameters"]["features"]
+            self.assertTrue(f["crosses_ten"], f)
+
+    def test_pick_distinct_pair_rejects_flat_decade(self):
+        # Every pair sits in the 60s decade with no ten strictly between:
+        # distinct rounded values, but never a crossing.
+        from server import weather
+        forecast = {
+            "dates": [f"2026-07-{d:02d}" for d in range(1, 8)],
+            "t_max": [62, 63, 64, 65, 66, 67, 68],
+        }
+        for _ in range(20):
+            self.assertIsNone(weather._pick_distinct_pair(forecast, "t_max"))
+
+    def test_temp_delta_falls_back_when_forecast_never_crosses(self):
+        from server import weather
+        forecast = {
+            "dates": [f"2026-07-{d:02d}" for d in range(1, 8)],
+            "t_max": [62, 63, 64, 65, 66, 67, 68],
+            "t_min": [49, 52, 55, 51, 44, 47, 53],
+            "wind_max": [9, 12, 15, 11, 7, 14, 10],
+        }
+        for _ in range(20):
+            result = weather._temp_delta(self._loc(), forecast)
+            self.assertEqual(result["parameters"]["operation"], "daily_range")
+
+    def test_daily_range_prefers_the_one_crossing_day(self):
+        from server import weather
+        forecast = {
+            "dates": ["2026-07-01", "2026-07-02", "2026-07-03"],
+            # day 0: 65/64 no cross (same decade). day 1: 72/68 crosses (70).
+            # day 2: 61/60 no cross (landing exactly on ten doesn't count).
+            "t_max": [65, 72, 61],
+            "t_min": [64, 68, 60],
+        }
+        for _ in range(20):
+            result = weather._daily_range(self._loc(), forecast)
+            self.assertEqual(result["parameters"]["high"], 72)
+            self.assertEqual(result["parameters"]["low"], 68)
+            self.assertTrue(result["parameters"]["features"]["crosses_ten"])
+
+    def test_daily_range_falls_back_when_no_day_crosses(self):
+        from server import weather
+        forecast = {
+            "dates": ["2026-07-01", "2026-07-02", "2026-07-03"],
+            "t_max": [65, 66, 67],
+            "t_min": [61, 62, 63],
+        }
+        for _ in range(20):
+            result = weather._daily_range(self._loc(), forecast)
+            self.assertFalse(result["parameters"]["features"]["crosses_ten"])
+            self.assertIn(result["parameters"]["high"], (65, 66, 67))
+
+    def test_generate_weather_math_never_yields_crosses_ten_false(self):
+        # Integration: generate()'s suppression gate + the pre-filters above
+        # mean a returned weather_math result never carries crosses_ten=False.
+        from server import suppressions as s
+        from server import weather
+        s.load_active(force=True)
+        with unittest.mock.patch.object(
+            weather, "load_forecast", lambda location: weather._fallback_forecast()
+        ):
+            for _ in range(100):
+                result = generator.generate("weather_math")
+                f = result["parameters"].get("features")
+                if f is not None and "crosses_ten" in f:
+                    self.assertTrue(f["crosses_ten"], result["parameters"])
+
+
+class MoneyCrossingTests(unittest.TestCase):
+    """2026-07-05 bones-doctrine: money_arithmetic activates crossing via
+    suppressions.yaml. charge_total/category_difference carry crosses_ten
+    and the generation-side pickers pre-filter for it; tip/split/
+    category_amount/fallback carry no crosses_ten key (present-key gating
+    means the require rule can't fire on them, by design)."""
+
+    def test_generate_money_arithmetic_never_yields_crosses_ten_false(self):
+        from server import money
+        from server import suppressions as s
+        s.load_active(force=True)
+        rows = [
+            {"date": "2026-01-01", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-02", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-01", "payee": "Cross", "category": "Misc", "amount": 8.0},
+            {"date": "2026-01-02", "payee": "Cross", "category": "Misc", "amount": 8.0},
+            {"date": "2026-01-03", "payee": "Cross", "category": "Misc", "amount": 8.0},
+        ]
+        with unittest.mock.patch.object(money, "load_transactions", lambda path=money.DEFAULT_CSV: rows):
+            for _ in range(50):
+                result = generator.generate(
+                    "money_arithmetic", target={"operation": "charge_total"}
+                )
+                f = result["parameters"].get("features")
+                if f is not None and "crosses_ten" in f:
+                    self.assertTrue(f["crosses_ten"], result["parameters"])
 
 
 class SuppressionRuleTests(unittest.TestCase):
     def _params(self, a, b, **extra):
-        from server.generator import _compute_features
-        return {"a": a, "b": b, "features": _compute_features(a, b, extra=extra or None)}
+        from server import bones
+        return {"a": a, "b": b, "features": bones.compute_features("-", (a, b), extra=extra or None)}
+
+    def _pred(self, feature, **cmp):
+        # single-comparator kwarg, e.g. self._pred("abs_diff", lte=2)
+        _, fn = suppressions._compile_inline({"feature": feature, **cmp})
+        return fn
 
     def test_trivial_diff_fires_on_features_not_skill(self):
         # abs_diff=1 → suppressed regardless of skill_id
         p = self._params(10, 9)
-        self.assertIsNotNone(suppressions.REGISTRY["trivial_diff"]("addition", p))
-        self.assertIsNotNone(suppressions.REGISTRY["trivial_diff"]("weather_math", p))
+        fn = self._pred("abs_diff", lte=2)
+        self.assertTrue(fn("addition", p))
+        self.assertTrue(fn("weather_math", p))
 
     def test_trivial_diff_does_not_fire_on_large_diff(self):
         p = self._params(17, 2)  # abs_diff=15
-        self.assertFalse(suppressions.REGISTRY["trivial_diff"]("subtraction", p))
+        fn = self._pred("abs_diff", lte=2)
+        self.assertFalse(fn("subtraction", p))
 
     def test_small_operand_new_rule(self):
         p = self._params(17, 2)  # min_operand=2
-        self.assertTrue(suppressions.REGISTRY["small_operand"]("subtraction", p))
+        fn = self._pred("min_operand", lte=2)
+        self.assertTrue(fn("subtraction", p))
 
     def test_small_operand_does_not_fire_above_threshold(self):
         p = self._params(17, 3)  # min_operand=3
-        self.assertFalse(suppressions.REGISTRY["small_operand"]("subtraction", p))
+        fn = self._pred("min_operand", lte=2)
+        self.assertFalse(fn("subtraction", p))
 
     def test_by_ten_skill_agnostic(self):
         p = self._params(18, 10)
@@ -64,8 +208,9 @@ class SuppressionRuleTests(unittest.TestCase):
 
     def test_subtract_zero_via_min_operand(self):
         p = self._params(5, 0)
-        self.assertTrue(suppressions.REGISTRY["subtract_zero"]("subtraction", p))
-        self.assertTrue(suppressions.REGISTRY["subtract_zero"]("addition", p))
+        fn = self._pred("min_operand", eq=0)
+        self.assertTrue(fn("subtraction", p))
+        self.assertTrue(fn("addition", p))
 
     def test_generate_division_never_divides_by_small(self):
         # integration: division small_operand suppression blocks /1 and /2
@@ -101,6 +246,46 @@ class SuppressionRuleTests(unittest.TestCase):
             self.assertGreater(b, 2, f"b={b} should be suppressed")
 
 
+class RaisedFloorPoolTests(unittest.TestCase):
+    """2026-07-05 doctrine: single-digit multiplication/division tables are
+    retired. The generator's raw per-level pools (not just generate()'s
+    suppress-and-resample safety net) must already clear the full active
+    rule set — max_operand>=13 (suppressions.yaml), trivial_value, by_ten,
+    ten_divisor — on every draw, at every level."""
+
+    def test_multiplication_pools_clear_active_rules_at_every_level(self):
+        active = suppressions.load_active(force=True)
+        for level in (1, 2, 3):
+            for _ in range(100):
+                result = generator._gen_multiplication(level)
+                params = result["parameters"]
+                self.assertIsNone(
+                    suppressions.matches("multiplication", params, active),
+                    f"level {level}: {params} matched a suppression rule",
+                )
+                self.assertGreaterEqual(
+                    max(params["a"], params["b"]), 13,
+                    f"level {level}: {params} has max operand < 13",
+                )
+
+    def test_division_pools_clear_active_rules_at_every_level(self):
+        active = suppressions.load_active(force=True)
+        for level in (1, 2, 3):
+            for _ in range(100):
+                result = generator._gen_division(level)
+                params = result["parameters"]
+                self.assertIsNone(
+                    suppressions.matches("division", params, active),
+                    f"level {level}: {params} matched a suppression rule",
+                )
+                divisor = params["b"]
+                quotient = params["a"] // divisor
+                self.assertGreaterEqual(
+                    max(divisor, quotient), 13,
+                    f"level {level}: {params} has max recalled operand < 13",
+                )
+
+
 def test_load_active_reloads_on_mtime_change(tmp_path, monkeypatch):
     yaml_path = tmp_path / "suppressions.yaml"
     yaml_path.write_text("addition: [by_ten]\n")
@@ -109,7 +294,98 @@ def test_load_active_reloads_on_mtime_change(tmp_path, monkeypatch):
     suppressions._cache_mtime = None   # reset mtime cache
     first = suppressions.load_active()
     assert first == {"addition": ["by_ten"]}
-    yaml_path.write_text("addition: [by_ten, small_operand]\n")
+    yaml_path.write_text("addition: [by_ten, trivial_value]\n")
     os.utime(yaml_path, (time.time() + 5, time.time() + 5))  # force mtime forward
     second = suppressions.load_active()
-    assert second == {"addition": ["by_ten", "small_operand"]}
+    assert second == {"addition": ["by_ten", "trivial_value"]}
+
+
+class InlineComparatorTests(unittest.TestCase):
+    """Unit tests for suppressions._compile_inline (the config-form entry
+    compiler: {feature: <name>, <cmp>: <value>})."""
+
+    def test_lte_fires_at_and_below_threshold(self):
+        _, fn = suppressions._compile_inline({"feature": "abs_diff", "lte": 2})
+        self.assertTrue(fn("x", {"features": {"abs_diff": 2}}))
+        self.assertTrue(fn("x", {"features": {"abs_diff": 1}}))
+        self.assertFalse(fn("x", {"features": {"abs_diff": 3}}))
+
+    def test_gte_fires_at_and_above_threshold(self):
+        _, fn = suppressions._compile_inline({"feature": "max_operand", "gte": 100})
+        self.assertTrue(fn("x", {"features": {"max_operand": 100}}))
+        self.assertTrue(fn("x", {"features": {"max_operand": 101}}))
+        self.assertFalse(fn("x", {"features": {"max_operand": 99}}))
+
+    def test_eq_fires_on_exact_match(self):
+        _, fn = suppressions._compile_inline({"feature": "min_operand", "eq": 0})
+        self.assertTrue(fn("x", {"features": {"min_operand": 0}}))
+        self.assertFalse(fn("x", {"features": {"min_operand": 1}}))
+
+    def test_in_fires_on_membership(self):
+        _, fn = suppressions._compile_inline({"feature": "abs_diff", "in": [5, 10, 50]})
+        self.assertTrue(fn("x", {"features": {"abs_diff": 10}}))
+        self.assertFalse(fn("x", {"features": {"abs_diff": 7}}))
+
+    def test_require_fires_when_feature_falsy(self):
+        _, fn = suppressions._compile_inline({"feature": "crosses_ten", "require": True})
+        self.assertTrue(fn("x", {"features": {"crosses_ten": False}}))
+        self.assertFalse(fn("x", {"features": {"crosses_ten": True}}))
+
+    def test_absent_feature_never_fires(self):
+        entries = [
+            {"feature": "abs_diff", "lte": 2},
+            {"feature": "abs_diff", "gte": 0},
+            {"feature": "abs_diff", "eq": 0},
+            {"feature": "abs_diff", "in": [0, 1]},
+            {"feature": "crosses_ten", "require": True},
+        ]
+        for entry in entries:
+            _, fn = suppressions._compile_inline(entry)
+            self.assertFalse(fn("x", {"features": {}}), entry)
+
+    def test_malformed_entries_return_none(self):
+        malformed = [
+            {"feature": "abs_diff"},                       # no comparator
+            {"feature": "abs_diff", "lte": 2, "gte": 1},    # two comparators
+            {"lte": 2},                                     # no feature
+            {"feature": "abs_diff", "bogus": 2},            # unknown comparator
+            {"feature": "abs_diff", "lte": "two"},          # non-numeric lte
+            {"feature": "abs_diff", "in": 5},                # in not a list
+            {"feature": "crosses_ten", "require": False},   # require must be True
+            {"feature": 5, "lte": 2},                        # feature not a str
+        ]
+        for entry in malformed:
+            self.assertIsNone(suppressions._compile_inline(entry), entry)
+
+
+def test_load_active_mixed_str_and_dict_entries(tmp_path, monkeypatch):
+    yaml_path = tmp_path / "suppressions.yaml"
+    yaml_path.write_text(
+        "addition:\n"
+        "  - by_ten\n"
+        "  - {feature: abs_diff, lte: 2}\n"
+    )
+    monkeypatch.setattr(suppressions, "_YAML_PATH", yaml_path)
+    suppressions._active_cache = None
+    suppressions._cache_mtime = None
+    active = suppressions.load_active()
+    names = active["addition"]
+    assert "by_ten" in names
+    assert len(names) == 2
+    inline_name = next(n for n in names if n != "by_ten")
+    assert suppressions.REGISTRY[inline_name]("addition", {"features": {"abs_diff": 1}})
+    assert not suppressions.REGISTRY[inline_name]("addition", {"features": {"abs_diff": 9}})
+
+
+def test_load_active_ignores_malformed_dict_entry(tmp_path, monkeypatch):
+    yaml_path = tmp_path / "suppressions.yaml"
+    yaml_path.write_text(
+        "addition:\n"
+        "  - by_ten\n"
+        "  - {feature: abs_diff, lte: 2, gte: 1}\n"  # malformed: two comparators
+    )
+    monkeypatch.setattr(suppressions, "_YAML_PATH", yaml_path)
+    suppressions._active_cache = None
+    suppressions._cache_mtime = None
+    active = suppressions.load_active()
+    assert active["addition"] == ["by_ten"]

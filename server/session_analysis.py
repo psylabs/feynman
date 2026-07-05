@@ -186,6 +186,8 @@ def pattern_analysis(attempts: list[dict]) -> list[dict]:
             except (TypeError, ValueError):
                 continue
         for key, val in (params.get("features") or {}).items():
+            if key == "crosses_ten":
+                continue  # rule-constant True (suppression gate enforces it) — dead dimension
             groups[(a["skill_id"], key, val)].append(int(a["resolution_latency_ms"]))
     results = []
     for (skill_id, fkey, fval), lats in groups.items():

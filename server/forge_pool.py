@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +32,28 @@ def eligible(target: dict | None) -> bool:
     return not bool(target.keys() - _BASE_TARGET_KEYS)
 
 
-def take(skill_id: str, operation: str) -> Optional[dict]:
+def take(
+    skill_id: str,
+    operation: str,
+    validator: Optional[Callable[[dict], bool]] = None,
+) -> Optional[dict]:
     """Return and consume the first unused pool entry matching skill_id+operation.
 
     Marks the entry used=True and writes the file back atomically (write to a
     sibling .tmp file + os.replace) so concurrent readers always see a
     consistent snapshot.
 
+    ``validator``, when given, is called on each candidate entry before it is
+    served. An entry that fails the validator is marked ``{"used": True,
+    "invalid": True}`` and the scan continues to the next candidate — so one
+    bad LLM-forged entry doesn't block the whole operation, it just gets
+    burned. All markings (invalid skips plus the final served entry, if any)
+    are flushed in a single atomic write-back, same as before.
+
     Returns None when:
     - the pool file is missing or unreadable/unparseable
     - no unused entry matches the requested skill_id and operation
+    - every matching entry fails the validator
     """
     pool_path = Path(POOL_PATH)
     try:
@@ -51,6 +63,10 @@ def take(skill_id: str, operation: str) -> Optional[dict]:
             return None
     except (OSError, json.JSONDecodeError):
         return None
+
+    updated = list(entries)
+    changed = False
+    served: Optional[dict] = None
 
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
@@ -62,9 +78,23 @@ def take(skill_id: str, operation: str) -> Optional[dict]:
         if entry.get("operation") != operation:
             continue
 
-        # Found a match — mark it used and write back atomically.
-        updated = list(entries)
+        if validator is not None and not validator(entry):
+            updated[i] = {**entry, "used": True, "invalid": True}
+            changed = True
+            logger.warning(
+                "forge_pool: entry %s failed validator, marking invalid "
+                "(skill_id=%s operation=%s)",
+                entry.get("id"), skill_id, operation,
+            )
+            continue
+
+        # Found a match — mark it used; write-back happens once, below.
         updated[i] = {**entry, "used": True}
+        changed = True
+        served = entry  # return the original (used=False) so caller has full entry
+        break
+
+    if changed:
         tmp_path = pool_path.with_suffix(".tmp")
         try:
             tmp_path.write_text(json.dumps(updated, indent=2))
@@ -72,6 +102,4 @@ def take(skill_id: str, operation: str) -> Optional[dict]:
         except OSError as exc:
             logger.warning("forge_pool: failed to write pool back: %s", exc)
 
-        return entry  # return the original (used=False) so caller has full entry
-
-    return None
+    return served

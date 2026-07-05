@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 import tempfile
 
-from server import forge_pool, money, weather
+from server import forge_ops, forge_pool, money, suppressions, weather
 from server.taxonomy import classify
 
 
@@ -150,13 +150,16 @@ class TestMoneyForgeIntegration(unittest.TestCase):
     """generate_problem() draws from the pool, then falls back to built-in."""
 
     def _pool_entry(self) -> dict:
+        # 13+24=37: every running-partial-sum step must cross a ten (bones
+        # doctrine) — (30, 20) would round-trip to (3, 5) after trailing-zero
+        # reduction and fail the money_arithmetic crosses_ten:require rule.
         return _make_entry(
             id="moneyentry01",
-            prompt="You had 2 charges at Grocery: $30 and $20. About what's the total?",
+            prompt="You had 2 charges at Grocery: $13 and $24. About what's the total?",
             skill_id="money_arithmetic",
             operation="charge_total",
             op="add_list",
-            args=[30, 20],
+            args=[13, 24],
             used=False,
         )
 
@@ -169,10 +172,14 @@ class TestMoneyForgeIntegration(unittest.TestCase):
                 result = money.generate_problem(target={"operation": "charge_total"})
 
         self.assertEqual(result["prompt"], entry["prompt"])
-        self.assertEqual(result["expected"], 50.0)  # add_list(30, 20) = 50
+        self.assertEqual(result["expected"], 37.0)  # add_list(13, 24) = 37
         self.assertEqual(result["parameters"]["source"], "forge")
         self.assertEqual(result["parameters"]["forge_id"], "moneyentry01")
         self.assertEqual(result["parameters"]["operation"], "charge_total")
+        # Task 7: forge entries stamp bones features into served parameters.
+        self.assertEqual(result["parameters"]["features"]["min_operand"], 13)
+        self.assertEqual(result["parameters"]["features"]["max_operand"], 24)
+        self.assertTrue(result["parameters"]["features"]["crosses_ten"])
 
     def test_forge_entry_consumed_only_once_then_builtin(self):
         entry = self._pool_entry()
@@ -220,16 +227,20 @@ class TestMoneyForgeIntegration(unittest.TestCase):
             pool = Path(td) / "pool.json"
             pool.write_text(json.dumps([bad_entry]))
             with patch.object(forge_pool, "POOL_PATH", pool):
-                with self.assertLogs("server.money", level="WARNING") as log_ctx:
+                # Task 7: forge_pool's validator now catches div-by-zero via
+                # forge_ops.features_for_entry (returns None) before money.py
+                # ever calls OPS itself — the warning moves to forge_pool.
+                with self.assertLogs("server.forge_pool", level="WARNING") as log_ctx:
                     result = money.generate_problem(rows=rows, target={"operation": "charge_total"})
                 on_disk = json.loads(pool.read_text())
 
         # Should not crash; should fall through to built-in
         self.assertNotEqual(result["parameters"].get("source"), "forge")
-        # Entry should be marked used on disk
+        # Entry should be marked used AND invalid on disk
         self.assertTrue(on_disk[0]["used"])
+        self.assertTrue(on_disk[0].get("invalid"))
         # Warning should have been logged
-        self.assertTrue(any("malformed" in m.lower() or "badentry001" in m for m in log_ctx.output))
+        self.assertTrue(any("invalid" in m.lower() or "badentry001" in m for m in log_ctx.output))
 
     def test_forge_parameters_include_level(self):
         entry = self._pool_entry()
@@ -321,13 +332,17 @@ class TestWeatherForgeIntegration(unittest.TestCase):
             pool = Path(td) / "pool.json"
             pool.write_text(json.dumps([bad_entry]))
             with patch.object(forge_pool, "POOL_PATH", pool):
-                with self.assertLogs("server.weather", level="WARNING") as log_ctx:
+                # Task 7: the validator's forge_ops.features_for_entry call
+                # catches the non-numeric arg (returns None) before weather.py
+                # ever calls OPS itself — the warning moves to forge_pool.
+                with self.assertLogs("server.forge_pool", level="WARNING") as log_ctx:
                     result = weather.generate_problem(target={"operation": "daily_range"})
                 on_disk = json.loads(pool.read_text())
 
         self.assertNotEqual(result["parameters"].get("source"), "forge")
         self.assertTrue(on_disk[0]["used"])
-        self.assertTrue(any("malformed" in m.lower() or "wbadentry01" in m for m in log_ctx.output))
+        self.assertTrue(on_disk[0].get("invalid"))
+        self.assertTrue(any("invalid" in m.lower() or "wbadentry01" in m for m in log_ctx.output))
 
 
 # ---------------------------------------------------------------------------
@@ -422,13 +437,15 @@ class TestPinnedTargetSkipsPool(unittest.TestCase):
     """target with extra keys must not consume a pool entry in either module."""
 
     def _money_pool_entry(self) -> dict:
+        # (13, 24), not (30, 20): 30+20 reduces to (3, 5) after stripping
+        # trailing zeros and fails the money_arithmetic crosses_ten rule.
         return _make_entry(
             id="money_pinned01",
-            prompt="You had 2 charges at Grocery: $30 and $20. About what's the total?",
+            prompt="You had 2 charges at Grocery: $13 and $24. About what's the total?",
             skill_id="money_arithmetic",
             operation="charge_total",
             op="add_list",
-            args=[30, 20],
+            args=[13, 24],
             used=False,
         )
 
@@ -548,6 +565,156 @@ class TestForgeClassify(unittest.TestCase):
         taxon = classify("money_arithmetic", params)
         self.assertIsNotNone(taxon)
         self.assertEqual(taxon.key, "money:restaurant_tip_15")
+
+
+# ---------------------------------------------------------------------------
+# forge_ops.features_for_entry() unit tests (Task 7)
+# ---------------------------------------------------------------------------
+
+
+class TestFeaturesForEntry(unittest.TestCase):
+    def test_sub_maps_to_minus_movement(self):
+        f = forge_ops.features_for_entry({"op": "sub", "args": [21, 3], "operation": "category_difference"})
+        self.assertIsNotNone(f)
+        self.assertEqual(f["min_operand"], 3)
+        self.assertEqual(f["max_operand"], 21)
+        self.assertTrue(f["crosses_ten"])  # movement default: crosses_ten(21, 18)
+        self.assertEqual(f["operation"], "category_difference")
+
+    def test_delta_maps_to_minus_with_endpoints(self):
+        f = forge_ops.features_for_entry({"op": "delta", "args": [72, 55], "operation": "daily_range"})
+        self.assertIsNotNone(f)
+        self.assertTrue(f["crosses_ten"])  # crosses_ten(72, 55) endpoints, not movement
+        self.assertEqual(f["operation"], "daily_range")
+
+    def test_add_list_maps_to_plus_over_all_args(self):
+        f = forge_ops.features_for_entry({"op": "add_list", "args": [12, 23, 14], "operation": "charge_total"})
+        self.assertIsNotNone(f)
+        self.assertEqual(f["min_operand"], 12)
+        self.assertEqual(f["max_operand"], 23)
+        self.assertTrue(f["crosses_ten"])
+
+    def test_div_maps_to_divisor_quotient_convention(self):
+        f = forge_ops.features_for_entry({"op": "div", "args": [80, 4], "operation": "split_bill"})
+        self.assertIsNotNone(f)
+        # bones convention: (divisor, quotient) = (4, 20), not (dividend, divisor)
+        self.assertEqual(f["min_operand"], 4)
+        self.assertEqual(f["max_operand"], 20)
+        for key in ("has_carry", "has_borrow", "crosses_ten"):
+            self.assertNotIn(key, f)
+
+    def test_pct_of_maps_to_pct(self):
+        f = forge_ops.features_for_entry({"op": "pct_of", "args": [15, 120], "operation": "category_amount"})
+        self.assertIsNotNone(f)
+        self.assertEqual(f["min_operand"], 15)
+        self.assertEqual(f["max_operand"], 120)
+        self.assertNotIn("crosses_ten", f)
+
+    def test_unknown_op_returns_none(self):
+        self.assertIsNone(forge_ops.features_for_entry({"op": "multiply", "args": [2, 3], "operation": "x"}))
+
+    def test_malformed_args_returns_none(self):
+        self.assertIsNone(forge_ops.features_for_entry({"op": "sub", "args": "nope", "operation": "x"}))
+        self.assertIsNone(forge_ops.features_for_entry({"op": "sub", "args": [1, 2, 3], "operation": "x"}))
+        self.assertIsNone(forge_ops.features_for_entry({"op": "sub", "args": [], "operation": "x"}))
+
+    def test_div_by_zero_returns_none(self):
+        self.assertIsNone(forge_ops.features_for_entry({"op": "div", "args": [10, 0], "operation": "x"}))
+
+    def test_div_non_integer_quotient_returns_none(self):
+        self.assertIsNone(forge_ops.features_for_entry({"op": "div", "args": [10, 3], "operation": "x"}))
+
+    def test_non_integral_operand_returns_none(self):
+        """bones is place-value logic — fractional operands have no crossing
+        semantics, so a non-integral value (even though OPS(*args) would run
+        fine) is treated as unmappable rather than silently truncated."""
+        self.assertIsNone(forge_ops.features_for_entry({"op": "sub", "args": [21.5, 3], "operation": "x"}))
+
+    def test_integral_float_args_coerced_to_int(self):
+        f = forge_ops.features_for_entry({"op": "sub", "args": [21.0, 3.0], "operation": "x"})
+        self.assertIsNotNone(f)
+        self.assertEqual(f["min_operand"], 3)
+        self.assertEqual(f["max_operand"], 21)
+
+    def test_non_numeric_arg_returns_none(self):
+        self.assertIsNone(forge_ops.features_for_entry({"op": "delta", "args": ["not_a_number", 55], "operation": "x"}))
+
+
+# ---------------------------------------------------------------------------
+# forge_pool.take() validator behavior (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def _forge_validator(skill_id: str):
+    """Mirrors the production validator built in money.py/weather.py."""
+    active = suppressions.load_active()
+
+    def _valid(entry: dict) -> bool:
+        features = forge_ops.features_for_entry(entry)
+        return features is not None and not suppressions.matches(skill_id, {"features": features}, active)
+
+    return _valid
+
+
+class TestTakeValidator(unittest.TestCase):
+    def _entry(self, id_, args, op="sub", operation="category_difference", skill_id="money_arithmetic"):
+        return _make_entry(id=id_, prompt=f"placeholder {args}", skill_id=skill_id,
+                            operation=operation, op=op, args=list(args), used=False)
+
+    def test_invalid_entry_skipped_and_marked_valid_one_served(self):
+        """A non-crossing sub (15, 3) is skipped-and-marked; the scan
+        continues past it to a crossing sub (21, 3), which serves with
+        features stamped."""
+        invalid = self._entry("invalid01", (15, 3))
+        valid = self._entry("valid01", (21, 3))
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([invalid, valid]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = forge_pool.take(
+                    "money_arithmetic", "category_difference",
+                    validator=_forge_validator("money_arithmetic"),
+                )
+                on_disk = json.loads(pool.read_text())
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], "valid01")
+
+        self.assertTrue(on_disk[0]["used"])
+        self.assertTrue(on_disk[0].get("invalid"))
+        self.assertTrue(on_disk[1]["used"])
+        self.assertNotIn("invalid", on_disk[1])
+
+    def test_all_entries_invalid_returns_none_but_still_writes_back(self):
+        invalid = self._entry("invalid01", (15, 3))
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([invalid]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = forge_pool.take(
+                    "money_arithmetic", "category_difference",
+                    validator=_forge_validator("money_arithmetic"),
+                )
+                on_disk = json.loads(pool.read_text())
+
+        self.assertIsNone(result)
+        self.assertTrue(on_disk[0]["used"])
+        self.assertTrue(on_disk[0].get("invalid"))
+
+    def test_no_validator_keeps_prior_behavior(self):
+        """Passing no validator (the default) never adds 'invalid' — matches
+        pre-Task-7 behavior exactly."""
+        entry = self._entry("plain01", (15, 3))
+        with tempfile.TemporaryDirectory() as td:
+            pool = Path(td) / "pool.json"
+            pool.write_text(json.dumps([entry]))
+            with patch.object(forge_pool, "POOL_PATH", pool):
+                result = forge_pool.take("money_arithmetic", "category_difference")
+                on_disk = json.loads(pool.read_text())
+
+        self.assertIsNotNone(result)
+        self.assertTrue(on_disk[0]["used"])
+        self.assertNotIn("invalid", on_disk[0])
 
 
 if __name__ == "__main__":

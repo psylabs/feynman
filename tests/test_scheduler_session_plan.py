@@ -70,8 +70,8 @@ def _money_attempts(op="split_bill", n=6, correct=0, latency=6000, start=300):
     ]
 
 
-def _mul_primitive_attempts(a=7, b=8, n=6, correct=0, latency=6000, start=400):
-    """Attempts classifying to primitive family 'mul.x8' (key 'mul:7x8')."""
+def _mul_primitive_attempts(a=7, b=13, n=6, correct=0, latency=6000, start=400):
+    """Attempts classifying to primitive family 'mul.x13' (key 'mul:7x13')."""
     return [
         {
             "skill_id": "multiplication",
@@ -179,8 +179,11 @@ class TargetTranslatorTests(unittest.TestCase):
 class DueFirstTests(unittest.TestCase):
     def test_due_items_come_before_weak_family_drills(self):
         now = time.time()
-        due = [{"item_key": "mul:6x7", "tier": "primitive",
-                "family": "mul.x7", "due_at": now - 10 * 86400}]
+        # mul:6x13 clears every active multiplication suppression rule
+        # (max_operand=13 > 12, nothing <= 5 or in {10, 11}) — a legal due
+        # item, unlike a retired mul:6x7 which the zombie guard now skips.
+        due = [{"item_key": "mul:6x13", "tier": "primitive",
+                "family": "mul.x13", "due_at": now - 10 * 86400}]
         # _mul_compound_attempts classifies to key "mul.2dx1d" (family == key for
         # compound), so it lands in recent and gets blocked from weak selection
         # (Fix 2). _pct_attempts classifies to key "pct:15" which != family "pct",
@@ -195,14 +198,17 @@ class DueFirstTests(unittest.TestCase):
         due_idx = next(i for i, r in enumerate(roles) if r.startswith("due"))
         weak_idx = next(i for i, r in enumerate(roles) if r.startswith("weak"))
         self.assertLess(due_idx, weak_idx)
-        self.assertEqual(plan[due_idx]["fact_key"], "mul:6x7")
+        self.assertEqual(plan[due_idx]["fact_key"], "mul:6x13")
 
     def test_due_items_fill_capacity_before_weak(self):
         now = time.time()
+        # hi=13 partners keep every fact legal (max_operand=13 > 12); lo in
+        # 6-9 keeps every operand/result above the trivial_value <= 5 floor,
+        # so none of these due items are suppressed/skipped.
         due = [
-            {"item_key": f"mul:{i}x7", "tier": "primitive",
-             "family": "mul.x7", "due_at": now - (10 + i) * 86400}
-            for i in range(2, 6)
+            {"item_key": f"mul:{i}x13", "tier": "primitive",
+             "family": "mul.x13", "due_at": now - (10 + i) * 86400}
+            for i in range(6, 10)
         ]
         storage = FakeStorage(attempts=_mul_compound_attempts(), due=due)
         plan = scheduler.build_session_plan(storage, "u", 2, _noop)
@@ -211,6 +217,22 @@ class DueFirstTests(unittest.TestCase):
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_bootstrap_families_exclude_unreachable_x12(self):
+        """mul.x12/div.x12 are unreachable on fresh generation (a fact whose
+        LARGER recalled operand is 12 has max_operand <= 12 and is suppressed
+        by the yaml rule), so bootstrapping them would zombie-schedule: the
+        pinned first-look would always be suppressed and re-sampled, and the
+        family's attempt count could never organically reach 5."""
+        for prefix in ("mul.x", "div.x"):
+            tables = sorted(
+                int(f.removeprefix(prefix))
+                for f in scheduler.BOOTSTRAP_FAMILIES
+                if f.startswith(prefix)
+            )
+            self.assertEqual(tables, [13, 14, 15, 16, 17, 18, 19], prefix)
+        self.assertIn("add.bridge10", scheduler.BOOTSTRAP_FAMILIES)
+        self.assertIn("sub.borrow20", scheduler.BOOTSTRAP_FAMILIES)
+
     def test_zero_division_user_gets_bootstrap_slot(self):
         # A user with lots of multiplication but no division: bootstrap must
         # inject at least one mul:/div: primitive.
@@ -270,29 +292,30 @@ class GroundedShareTests(unittest.TestCase):
 class RecentKeyExclusionTests(unittest.TestCase):
     def _due_and_recent(self, due_offset_days):
         now = time.time()
-        # recent attempt classifies to mul:6x7
+        # recent attempt classifies to mul:6x13 (hi=13 clears the raised MULT_TABLE
+        # floor; 6x7 would now classify compound, see docs/2026-07-05 doctrine).
         recent = [{
             "skill_id": "multiplication",
-            "parameters": {"a": 6, "b": 7, "level": 1},
+            "parameters": {"a": 6, "b": 13, "level": 1},
             "correct": 1, "skipped": 0,
             "resolution_latency_ms": 900, "onset_latency_ms": 700,
             "created_at": now,
         }]
         attempts = recent + _mul_compound_attempts()
-        due = [{"item_key": "mul:6x7", "tier": "primitive",
-                "family": "mul.x7", "due_at": now - due_offset_days * 86400}]
+        due = [{"item_key": "mul:6x13", "tier": "primitive",
+                "family": "mul.x13", "due_at": now - due_offset_days * 86400}]
         storage = FakeStorage(attempts=attempts, due=due)
         return scheduler.build_session_plan(storage, "u", 6, _noop)
 
     def test_recent_non_overdue_key_is_excluded(self):
         plan = self._due_and_recent(due_offset_days=0.01)  # ~15 min overdue
         due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
-        self.assertNotIn("mul:6x7", due_keys)
+        self.assertNotIn("mul:6x13", due_keys)
 
     def test_recent_key_included_when_more_than_a_day_overdue(self):
         plan = self._due_and_recent(due_offset_days=2)
         due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
-        self.assertIn("mul:6x7", due_keys)
+        self.assertIn("mul:6x13", due_keys)
 
 
 class ExclusionStubTests(unittest.TestCase):
@@ -353,11 +376,15 @@ class SkinTierGuardTests(unittest.TestCase):
     """Fix 1: apply_skins must never skin PRIMITIVE-tier slots."""
 
     def test_due_primitive_slot_not_skinned(self):
-        """A due primitive div:7x8 slot must not be skinned even when the
+        """A due primitive div:8x13 slot must not be skinned even when the
         grounded count is below target and 'div' matches a SKINS prefix."""
         now = time.time()
-        due = [{"item_key": "div:7x8", "tier": "primitive",
-                "family": "div.x7", "due_at": now - 5 * 86400}]
+        # div:8x13 clears every active division suppression rule (max_operand,
+        # from the (divisor, quotient) pair, is 13 > 12; nothing <= 5 or in
+        # {10, 11}) — a legal due item, unlike a retired div:7x8 which the
+        # zombie guard now skips (making this fixture's own assertions moot).
+        due = [{"item_key": "div:8x13", "tier": "primitive",
+                "family": "div.x13", "due_at": now - 5 * 86400}]
         # compound weak families give apply_skins something to work with
         attempts = _sub_compound_attempts() + _pct_attempts()
         storage = FakeStorage(attempts=attempts, due=due)
@@ -365,10 +392,10 @@ class SkinTierGuardTests(unittest.TestCase):
         for _ in range(20):
             plan = scheduler.build_session_plan(storage, "u", 6, _noop)
             for s in plan:
-                if s.get("fact_key") == "div:7x8":
+                if s.get("fact_key") == "div:8x13":
                     self.assertEqual(
                         s["skill_id"], "division",
-                        f"Primitive div:7x8 was skinned to {s['skill_id']}",
+                        f"Primitive div:8x13 was skinned to {s['skill_id']}",
                     )
                     self.assertFalse(
                         s["role"].endswith("+skin"),
@@ -497,21 +524,78 @@ class FamilyNamespaceBlockingTests(unittest.TestCase):
         self.assertFalse(slots[0]["role"].endswith("+skin"))
 
     def test_primitive_fact_cooldown_does_not_block_weak_family(self):
-        """Rule d: a cooldown on a single fact (mul:7x8) must NOT block the whole
-        mul.x8 weak family — per-fact cooldowns are due-lane-only."""
+        """Rule d: a cooldown on a single fact (mul:7x13) must NOT block the whole
+        mul.x13 weak family — per-fact cooldowns are due-lane-only."""
         storage = FakeStorageWithExclusions(
-            attempts=_mul_primitive_attempts(a=7, b=8),
-            cooldowns={"mul:7x8"},
+            attempts=_mul_primitive_attempts(a=7, b=13),
+            cooldowns={"mul:7x13"},
         )
         seen = False
         for _ in range(20):
             plan = scheduler.build_session_plan(storage, "u", 6, _noop)
             weak_keys = [s["fact_key"] for s in plan if s["role"].startswith("weak")]
-            if "mul.x8" in weak_keys:
+            if "mul.x13" in weak_keys:
                 seen = True
         self.assertTrue(
-            seen, "mul.x8 weak drills were wrongly blocked by a mul:7x8 cooldown"
+            seen, "mul.x13 weak drills were wrongly blocked by a mul:7x13 cooldown"
         )
+
+
+class DueLaneSuppressedZombieTests(unittest.TestCase):
+    """Final-review fix: a due item pinning a retired fact must be skipped
+    (not served) so it doesn't zombie-schedule — see scheduler.py due loop."""
+
+    def test_suppressed_due_item_skipped_nonsuppressed_due_item_kept(self):
+        now = time.time()
+        due = [
+            # mul:6x7 is retired (max_operand=7 <= 12 clears the raised-floor
+            # suppression rule) — pinning it would get suppressed+resampled by
+            # generate(), grading under a different key and never draining.
+            {"item_key": "mul:6x7", "tier": "primitive", "family": "mul.x7",
+             "due_at": now - 10 * 86400},
+            # mul:6x13 clears every active multiplication suppression rule
+            # (max_operand=13 > 12, nothing <= 5 or in {10, 11}), so it's a
+            # legitimate due review that must still fill a slot.
+            {"item_key": "mul:6x13", "tier": "primitive", "family": "mul.x13",
+             "due_at": now - 9 * 86400},
+        ]
+        storage = FakeStorage(attempts=_mul_compound_attempts(), due=due)
+        with self.assertLogs("feynman.scheduler", level="INFO") as cm:
+            plan = scheduler.build_session_plan(storage, "u", 6, _noop)
+        due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
+        self.assertNotIn("mul:6x7", due_keys)
+        self.assertIn("mul:6x13", due_keys)
+        self.assertTrue(
+            any("due.skip_suppressed" in msg and "mul:6x7" in msg
+                for msg in cm.output),
+            cm.output,
+        )
+
+    def test_real_due_item_behind_a_wall_of_zombies_still_gets_a_slot(self):
+        """Zombies never drain, so they accrete at the head of ORDER BY
+        due_at ASC. With a fetch limit of only length*2, enough zombies push
+        every real due item out of the fetch window entirely — the due lane
+        must fetch with enough headroom that a real item sitting behind more
+        than length*2 zombies still lands a slot."""
+        now = time.time()
+        length = 6
+        # More zombies than length*2 (13 > 12), all more overdue than the one
+        # real item, so they fill the entire naive fetch window. Every
+        # mul:2xN fact is suppressed (operand 2 <= 5, trivial_value).
+        zombies = [
+            {"item_key": f"mul:2x{7 + i}", "tier": "primitive",
+             "family": f"mul.x{7 + i}", "due_at": now - (100 - i) * 86400}
+            for i in range(length * 2 + 1)
+        ]
+        real = {"item_key": "mul:6x13", "tier": "primitive",
+                "family": "mul.x13", "due_at": now - 5 * 86400}
+        storage = FakeStorage(attempts=_mul_compound_attempts(),
+                              due=zombies + [real])
+        plan = scheduler.build_session_plan(storage, "u", length, _noop)
+        due_keys = [s["fact_key"] for s in plan if s["role"].startswith("due")]
+        self.assertIn("mul:6x13", due_keys)
+        for z in zombies:
+            self.assertNotIn(z["item_key"], due_keys)
 
 
 if __name__ == "__main__":

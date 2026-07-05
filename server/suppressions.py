@@ -18,6 +18,7 @@ re-samples freely. Active suppressions win over scheduler hints.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable
 
@@ -25,14 +26,10 @@ import yaml
 
 MAX_RETRIES = 20
 _YAML_PATH = Path(__file__).parent.parent / "suppressions.yaml"
+_log = logging.getLogger("feynman.suppressions")
 
 Predicate = Callable[[str, dict], bool]
 REGISTRY: dict[str, Predicate] = {}
-
-# Differences the user has explicitly opted out of for subtraction. Edit in
-# suppressions.yaml? No — these are conceptually part of the rule itself.
-# Edit here when the set of "trivial round differences" changes.
-_ROUND_DIFFS = frozenset({5, 10, 50, 100, 200, 300, 400, 500, 1000})
 
 
 def rule(name: str) -> Callable[[Predicate], Predicate]:
@@ -47,26 +44,38 @@ def _f(params: dict) -> dict:
     return params.get("features") or {}
 
 
-@rule("single_digit_small")
-def _single_digit_small(skill_id: str, params: dict) -> bool:
-    return _f(params).get("max_operand", float("inf")) <= 2
+# Config-form entries: {feature: <name>, <cmp>: <value>}, one comparator
+# from lte/gte/eq/in/require. Compiled to a predicate at load time and
+# registered under a synthesized name, so matches() needs no changes.
+_OPS = {"lte": lambda a, b: a <= b, "gte": lambda a, b: a >= b, "eq": lambda a, b: a == b,
+        "in": lambda a, b: a in b, "require": lambda a, b: not a}  # require ignores fv's "b"
 
 
-@rule("trivial_diff")
-def _trivial_diff(skill_id: str, params: dict) -> bool:
-    v = _f(params).get("abs_diff")
-    return v is not None and v <= 2
+def _compile_inline(entry: dict) -> tuple[str, Predicate] | None:
+    """Compile a config-form entry, or return ``None`` if malformed.
 
+    Fires when ``feature`` is present in ``params["features"]`` and:
+    value<=lte / >=gte / ==eq / in the list / (require, value must be
+    ``True``) feature is falsy. Absent feature never fires.
+    """
+    feature = entry.get("feature")
+    cmps = [k for k in _OPS if k in entry]
+    if not isinstance(feature, str) or not feature or len(cmps) != 1 or len(entry) != 2:
+        return None
+    cmp, value = cmps[0], entry[cmps[0]]
+    if cmp in ("lte", "gte") and not isinstance(value, (int, float)):
+        return None
+    if cmp == "in" and not isinstance(value, list):
+        return None
+    if cmp == "require" and value is not True:
+        return None
+    op = _OPS[cmp]
 
-@rule("round_diff")
-def _round_diff(skill_id: str, params: dict) -> bool:
-    v = _f(params).get("abs_diff")
-    return v is not None and v in _ROUND_DIFFS
+    def predicate(skill_id: str, params: dict) -> bool:
+        f = _f(params)
+        return feature in f and op(f[feature], value)
 
-
-@rule("subtract_zero")
-def _subtract_zero(skill_id: str, params: dict) -> bool:
-    return _f(params).get("min_operand") == 0
+    return f"inline:{feature}:{cmp}={value!r}", predicate
 
 
 @rule("by_ten")
@@ -81,18 +90,6 @@ def _by_ten(skill_id: str, params: dict) -> bool:
     return (m is not None and m != 0 and m % 10 == 0) or (
         M is not None and M != 0 and M % 10 == 0
     )
-
-
-@rule("equal_operands")
-def _equal_operands(skill_id: str, params: dict) -> bool:
-    f = _f(params)
-    m, M = f.get("min_operand"), f.get("max_operand")
-    return m is not None and m == M
-
-
-@rule("small_operand")
-def _small_operand(skill_id: str, params: dict) -> bool:
-    return _f(params).get("min_operand", float("inf")) <= 2
 
 
 @rule("ten_divisor")
@@ -161,10 +158,21 @@ def load_active(force: bool = False) -> dict[str, list[str]]:
     with _YAML_PATH.open() as f:
         data = yaml.safe_load(f) or {}
     cleaned: dict[str, list[str]] = {}
-    for sid, names in data.items():
-        if not isinstance(names, list):
+    for sid, entries in data.items():
+        if not isinstance(entries, list):
             continue
-        cleaned[sid] = [n for n in names if n in REGISTRY]
+        names: list[str] = []
+        for entry in entries:
+            if isinstance(entry, str):
+                if entry in REGISTRY:
+                    names.append(entry)
+            elif isinstance(entry, dict) and (compiled := _compile_inline(entry)):
+                name, fn = compiled
+                REGISTRY[name] = fn
+                names.append(name)
+            else:
+                _log.warning("suppressions.yaml: malformed rule for %s: %r", sid, entry)
+        cleaned[sid] = names
     _active_cache = cleaned
     _cache_mtime = current_mtime
     return cleaned

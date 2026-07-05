@@ -126,18 +126,18 @@ class BulkFsrsGradingTest(unittest.TestCase):
 
     @patch("server.mastery.update")
     def test_correct_synced_attempt_creates_item_state_reps_1(self, _m):
-        # mul:7x8 primitive; correct, fast onset -> Rating.Good.
+        # mul:7x13 primitive; correct, fast onset -> Rating.Good.
         past = time.time() - 30 * 86400  # 30 days ago
         self.orch.record_bulk_attempts("user-1", [{
             "skill_id": "multiplication",
-            "expected_answer": 56,
-            "parsed_answer": 56,
-            "parameters": {"a": 7, "b": 8},
+            "expected_answer": 91,
+            "parsed_answer": 91,
+            "parameters": {"a": 7, "b": 13},
             "onset_latency_ms": 800,
             "resolution_latency_ms": 900,
             "created_at": past,
         }])
-        row = self.storage.get_item_state("user-1", "mul:7x8")
+        row = self.storage.get_item_state("user-1", "mul:7x13")
         self.assertIsNotNone(row, "correct synced attempt should create an item_state")
         self.assertEqual(row["reps"], 1)
 
@@ -148,14 +148,14 @@ class BulkFsrsGradingTest(unittest.TestCase):
         past = time.time() - 30 * 86400
         self.orch.record_bulk_attempts("user-1", [{
             "skill_id": "multiplication",
-            "expected_answer": 56,
-            "parsed_answer": 56,
-            "parameters": {"a": 7, "b": 8},
+            "expected_answer": 91,
+            "parsed_answer": 91,
+            "parameters": {"a": 7, "b": 13},
             "onset_latency_ms": 800,
             "resolution_latency_ms": 900,
             "created_at": past,
         }])
-        row = self.storage.get_item_state("user-1", "mul:7x8")
+        row = self.storage.get_item_state("user-1", "mul:7x13")
 
         # Equivalent review graded now: onset 800 <= 1200 target -> Good.
         _, now_due = srs.review(None, srs.rate(True, 800, 1200), datetime.now(timezone.utc))
@@ -168,12 +168,12 @@ class BulkFsrsGradingTest(unittest.TestCase):
     def test_skipped_synced_attempt_creates_no_item_state(self, _m):
         self.orch.record_bulk_attempts("user-1", [{
             "skill_id": "multiplication",
-            "expected_answer": 56,
-            "parameters": {"a": 7, "b": 8},
+            "expected_answer": 91,
+            "parameters": {"a": 7, "b": 13},
             "skipped": True,
             "created_at": time.time() - 86400,
         }])
-        self.assertIsNone(self.storage.get_item_state("user-1", "mul:7x8"))
+        self.assertIsNone(self.storage.get_item_state("user-1", "mul:7x13"))
 
 
 if __name__ == "__main__":

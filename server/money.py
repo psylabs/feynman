@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-from server import forge_ops, forge_pool
+from server import bones, forge_ops, forge_pool, suppressions
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,24 @@ EXCLUDED_PRACTICE_PREFIXES = (
 # These operations pull real recent Plaid transactions (merchant/amount/recency);
 # a canned pool entry can't provide that live grounding — never serve from the pool.
 _FORGE_EXCLUDED_OPS = frozenset({"restaurant_tip_15", "split_bill"})
+
+
+def _forge_validator(skill_id: str):
+    """Build a forge_pool validator: entry passes when its bones features are
+    mappable AND don't match an active suppression rule for ``skill_id``.
+
+    Active rules are loaded once per call (mirrors the generator.py samplers'
+    "load active once per call" pattern) rather than once per candidate.
+    """
+    active = suppressions.load_active()
+
+    def _valid(entry: dict) -> bool:
+        features = forge_ops.features_for_entry(entry)
+        return features is not None and not suppressions.matches(
+            skill_id, {"features": features}, active,
+        )
+
+    return _valid
 
 
 def load_transactions(path: Path = DEFAULT_CSV) -> list[dict]:
@@ -126,7 +144,9 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
     # Skip for live-Plaid ops (need real merchant/recency) or pinned targets.
     entry = None
     if operation not in _FORGE_EXCLUDED_OPS and forge_pool.eligible(target):
-        entry = forge_pool.take("money_arithmetic", operation)
+        entry = forge_pool.take(
+            "money_arithmetic", operation, validator=_forge_validator("money_arithmetic"),
+        )
     if entry is not None:
         try:
             expected = forge_ops.OPS[entry["op"]](*entry["args"])
@@ -138,6 +158,7 @@ def generate_problem(rows: list[dict] | None = None, target: dict | None = None)
                     "source": "forge",
                     "forge_id": entry["id"],
                     "level": (target or {}).get("level"),
+                    "features": forge_ops.features_for_entry(entry),
                 },
             }
         except Exception:
@@ -239,6 +260,9 @@ def _restaurant_tip_15(rows: list[dict], charge: dict | None = None) -> dict:
             "when": row.get("when"),
             "bill_amount": bill,
             "tip_percent": TIP_PERCENT,
+            "features": bones.compute_features(
+                "pct", (TIP_PERCENT, bill), extra={"operation": "restaurant_tip_15"},
+            ),
         },
     }
 
@@ -286,6 +310,9 @@ def _split_bill(rows: list[dict], max_party: int = SPLIT_BILL_BASE_MAX,
             "bill_amount": bill,
             "people": people,
             "max_party": max_party,
+            "features": bones.compute_features(
+                "/", (people, share), extra={"operation": "split_bill"},
+            ),
         },
     }
 
@@ -306,14 +333,34 @@ def _round_tip(amount: int, percent: int) -> int:
     return int(raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def _pick_crossing_group(candidates: list[list[dict]]) -> list[dict] | None:
+    """Shuffle candidate charge groups and return the first-3-by-date swagged
+    sample whose running partial sums all cross a ten.
+
+    Returns None when no candidate group passes; caller falls back to a
+    random pick (today's behavior) so the generate() gate's retry budget
+    isn't burned on candidates that would just be rejected anyway.
+    """
+    shuffled = candidates[:]
+    random.shuffle(shuffled)
+    for group in shuffled:
+        sample = sorted(group[:3], key=lambda r: r["date"])
+        swagged = [_swag(r["amount"]) for r in sample]
+        if bones.compute_features("+", swagged)["crosses_ten"]:
+            return sample
+    return None
+
+
 def _charge_total(rows: list[dict]) -> dict:
     groups = defaultdict(list)
     for row in rows:
         key = row["payee"] or row["category"]
         groups[key].append(row)
     candidates = [xs for xs in groups.values() if len(xs) >= 2]
-    sample = random.choice(candidates) if candidates else sorted(rows, key=lambda r: r["amount"], reverse=True)[:2]
-    sample = sorted(sample[:3], key=lambda r: r["date"])
+    sample = _pick_crossing_group(candidates) if candidates else None
+    if sample is None:
+        sample = random.choice(candidates) if candidates else sorted(rows, key=lambda r: r["amount"], reverse=True)[:2]
+        sample = sorted(sample[:3], key=lambda r: r["date"])
     label = _clean_label(sample[0]["payee"], sample[0]["category"])
     swagged = [_swag(r["amount"]) for r in sample]
     total = sum(swagged)
@@ -328,6 +375,9 @@ def _charge_total(rows: list[dict]) -> dict:
             "category": sample[0]["category"],
             "count": len(swagged),
             "amounts": swagged,
+            "features": bones.compute_features(
+                "+", swagged, extra={"operation": "charge_total"},
+            ),
         },
     }
 
@@ -344,8 +394,9 @@ def _category_difference(rows: list[dict]) -> dict:
         reverse=True,
     )[:2]
     swag_a, swag_b = _swag(total_a), _swag(total_b)
-    if swag_a == swag_b:
-        # Don't ask "how much more" when they round to the same number.
+    if swag_a == swag_b or not bones.crosses_ten(swag_a, swag_b):
+        # Don't ask "how much more" when they round to the same number, or
+        # when the difference doesn't cross a ten (too easy).
         return _charge_total(rows)
     diff = abs(swag_a - swag_b)
     label_a, label_b = _category_leaf(cat_a), _category_leaf(cat_b)
@@ -363,6 +414,10 @@ def _category_difference(rows: list[dict]) -> dict:
             "category_b": cat_b,
             "amount_a": swag_a,
             "amount_b": swag_b,
+            "features": bones.compute_features(
+                "-", (swag_a, swag_b), endpoints=(swag_a, swag_b),
+                extra={"operation": "category_difference"},
+            ),
         },
     }
 
@@ -417,6 +472,10 @@ def _category_amount(rows: list[dict], level=None) -> dict:
                         "category": category,
                         "month": month,
                         "level": level,
+                        "features": bones.compute_features(
+                            "pct", (pct, total_swag),
+                            extra={"operation": "category_amount"},
+                        ),
                     },
                 }
             if tries >= 10:
@@ -468,7 +527,13 @@ def _fallback_problem() -> dict:
     return {
         "prompt": "What is 20 percent of 50?",
         "expected": 10.0,
-        "parameters": {"operation": "charge_total", "source": "fallback"},
+        "parameters": {
+            "operation": "charge_total",
+            "source": "fallback",
+            "features": bones.compute_features(
+                "pct", (20, 50), extra={"operation": "charge_total"},
+            ),
+        },
     }
 
 

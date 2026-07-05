@@ -1,37 +1,47 @@
-# Active suppression rules per skill. Names must exist in
-# server/suppressions.py REGISTRY.
+# Active suppression rules per skill. Entries are either a registered rule
+# name (server/suppressions.py REGISTRY) or an inline comparator dict:
+#   {feature: <name>, <cmp>: <value>}  — one of lte/gte/eq/in/require.
 #
-# When you add or change rules here (or in the registry):
-#   1. Also drop the newly-suppressed values from the generator's sampling
-#      pools (server/generator.py) — leaving them in just burns the
-#      suppression retry budget (see the multiplication L1 comment there).
-#   2. Devices keep serving their cached offline seed packs, which were
-#      generated under the OLD rules. Trigger a refresh for good measure:
-#      tap "refresh pack" on the device (home screen), or wait for the
-#      auto top-up. New rules apply to online prompts immediately.
+# Adding a rule is a yaml edit; samplers pre-check the active set
+# automatically (Task 3). Only pools that ENUMERATE specific values (e.g. a
+# fixed level-1 divisor list) still need manual pruning. Device seed packs
+# stay stale until refreshed (tap "refresh pack", or wait for auto top-up).
 
 addition:
-  - single_digit_small
-  - small_operand
+  - {feature: max_operand, lte: 2}
+  - {feature: min_operand, lte: 2}
   - by_ten
+  - {feature: crosses_ten, require: true}
 
 subtraction:
-  - single_digit_small
-  - trivial_diff
-  - round_diff
-  - subtract_zero
-  - equal_operands
-  - small_operand
+  - {feature: max_operand, lte: 2}
+  - {feature: abs_diff, lte: 2}
+  - {feature: abs_diff, in: [5, 10, 50, 100, 200, 300, 400, 500, 1000]}
+  - {feature: min_operand, eq: 0}
+  - {feature: abs_diff, eq: 0}
+  - {feature: min_operand, lte: 2}
   - by_ten
+  - {feature: crosses_ten, require: true}
 
 multiplication:
   - by_ten
   - trivial_value        # any operand or the product <= 5 or 10/11 (2026-07-04)
+  - {feature: max_operand, lte: 12}   # raise the floor to the 13-19 tables (2026-07-05)
 
 division:
   - trivial_value        # any of divisor/dividend/quotient <= 5 or 10/11 (2026-07-04)
   - ten_divisor          # /10, /20, ... are decimal shifts
+  # max_operand is stamped from (divisor, quotient) — Task 3 — so this reads
+  # "both recalled facts <= 12 is too easy" (2026-07-05)
+  - {feature: max_operand, lte: 12}
 
 weather_math:
-  - trivial_diff
-  - round_diff
+  - {feature: abs_diff, lte: 2}
+  - {feature: abs_diff, in: [5, 10, 50, 100, 200, 300, 400, 500, 1000]}
+  - {feature: crosses_ten, require: true}
+
+# pct/"/" ops (tip, split, category_amount, fallback) don't get a crosses_ten
+# key from bones — present-key gating means this rule can't fire on them by
+# design; only "+" (charge_total) and "-" (category_difference) carry it.
+money_arithmetic:
+  - {feature: crosses_ten, require: true}

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from server import diagnosis, generator, money, scheduler
+from server import bones, diagnosis, generator, money, scheduler
 
 
 CSV = """Date,Account,Payee,Category,Exclusion,Amount
@@ -96,6 +96,7 @@ class MoneyTests(unittest.TestCase):
         self.assertNotIn("$18.42", problem["prompt"])
         self.assertEqual(problem["expected"], 51.0)
         self.assertEqual(problem["parameters"]["operation"], "charge_total")
+        self.assertIn("crosses_ten", problem["parameters"]["features"])
 
     def test_generates_category_difference_prompt(self):
         rows = [
@@ -115,6 +116,7 @@ class MoneyTests(unittest.TestCase):
         # 51.43 swag → 51; 28.75 swag → 29; diff = 22
         self.assertEqual(problem["expected"], 22.0)
         self.assertEqual(problem["parameters"]["operation"], "category_difference")
+        self.assertTrue(problem["parameters"]["features"]["crosses_ten"])
 
     def test_category_amount_prompt_shape_and_expected(self):
         # Groceries = $250 (25% of $1000 total); Dining = $750 (75%).
@@ -188,6 +190,92 @@ class MoneyTests(unittest.TestCase):
         target = scheduler._fact_key_to_target("money:category_amount")
 
         self.assertEqual(target, {"operation": "category_amount"})
+
+
+class MoneyBonesTests(unittest.TestCase):
+    """2026-07-05 bones-doctrine: every money op stamps features, and the
+    "+"/"-" ops (charge_total, category_difference) pre-filter candidates
+    for crosses_ten so the generate() gate's retry budget isn't burned.
+    Synthetic rows only — no CSV dependency."""
+
+    def test_charge_total_prefers_crossing_group(self):
+        # "Flat" (1,1,1): no running-sum step ever crosses a ten.
+        # "Cross" (8,8,8): every running-sum step crosses (8->16->24).
+        rows = [
+            {"date": "2026-01-01", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-02", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-03", "payee": "Flat", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-01", "payee": "Cross", "category": "Misc", "amount": 8.0},
+            {"date": "2026-01-02", "payee": "Cross", "category": "Misc", "amount": 8.0},
+            {"date": "2026-01-03", "payee": "Cross", "category": "Misc", "amount": 8.0},
+        ]
+        for _ in range(20):
+            problem = money.generate_problem(rows, target={"operation": "charge_total"})
+            self.assertEqual(problem["parameters"]["payee"], "Cross")
+            self.assertTrue(problem["parameters"]["features"]["crosses_ten"])
+
+    def test_charge_total_falls_back_when_no_group_crosses(self):
+        # Both groups are flat — no candidate crosses; keep today's behavior
+        # (a random pick) rather than starving on an impossible filter.
+        rows = [
+            {"date": "2026-01-01", "payee": "Flat1", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-02", "payee": "Flat1", "category": "Misc", "amount": 1.0},
+            {"date": "2026-01-01", "payee": "Flat2", "category": "Misc", "amount": 2.0},
+            {"date": "2026-01-02", "payee": "Flat2", "category": "Misc", "amount": 2.0},
+        ]
+        for _ in range(20):
+            problem = money.generate_problem(rows, target={"operation": "charge_total"})
+            self.assertIn(problem["parameters"]["payee"], ("Flat1", "Flat2"))
+            self.assertFalse(problem["parameters"]["features"]["crosses_ten"])
+
+    def test_category_difference_falls_back_when_no_crossing(self):
+        # Groceries=24, Dining=22: not equal, but (24-1)//10 == 22//10 == 2,
+        # so no ten lies strictly between them — falls back to charge_total.
+        rows = [
+            {"date": "2026-01-05", "payee": "A", "category": "Groceries", "amount": 24.0},
+            {"date": "2026-01-06", "payee": "B", "category": "Dining", "amount": 22.0},
+        ]
+        problem = money.generate_problem(rows, target={"operation": "category_difference"})
+        self.assertNotEqual(problem["parameters"]["operation"], "category_difference")
+
+    def test_restaurant_tip_15_features_have_no_crossing_key(self):
+        rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Food & Dining", "amount": 80.0}]
+        p = money.generate_problem(rows, target={"operation": "restaurant_tip_15"})
+        self.assertIn("features", p["parameters"])
+        self.assertNotIn("crosses_ten", p["parameters"]["features"])
+
+    def test_split_bill_features_have_no_crossing_key(self):
+        rows = [{"date": "2026-01-02", "payee": "Diner", "category": "Dining", "amount": 84.0}]
+        p = money.generate_problem(rows, target={"operation": "split_bill", "max_party": 5})
+        self.assertIn("features", p["parameters"])
+        self.assertNotIn("crosses_ten", p["parameters"]["features"])
+
+    def test_category_amount_features_have_no_crossing_key(self):
+        rows = [
+            {"date": "2026-01-10", "payee": "A", "category": "Groceries", "amount": 250.00},
+            {"date": "2026-01-15", "payee": "B", "category": "Dining", "amount": 750.00},
+        ]
+        p = money.generate_problem(rows, target={"operation": "category_amount"})
+        self.assertIn("features", p["parameters"])
+        self.assertNotIn("crosses_ten", p["parameters"]["features"])
+
+    def test_fallback_problem_features_have_no_crossing_key(self):
+        problem = money._fallback_problem()
+        self.assertIn("features", problem["parameters"])
+        self.assertNotIn("crosses_ten", problem["parameters"]["features"])
+
+    def test_money_arithmetic_suppression_rule_is_active(self):
+        from server import suppressions as s
+        active = s.load_active(force=True)
+        self.assertIn("money_arithmetic", active)
+        params_crossing = {"features": {"crosses_ten": True}}
+        params_flat = {"features": {"crosses_ten": False}}
+        params_no_key = {"features": {}}
+        self.assertIsNone(s.matches("money_arithmetic", params_crossing, active))
+        self.assertIsNotNone(s.matches("money_arithmetic", params_flat, active))
+        # Present-key gating: pct//" ops carry no crosses_ten key, so the
+        # rule can't fire on them (by design).
+        self.assertIsNone(s.matches("money_arithmetic", params_no_key, active))
 
 
 if __name__ == "__main__":

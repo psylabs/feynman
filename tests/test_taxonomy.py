@@ -62,9 +62,32 @@ def test_multiplication_table_and_beyond():
     assert t.tier == "compound" and t.family == "mul.2dx1d"
 
 
+def test_multiplication_raised_floor_only_needs_the_larger_operand_in_table():
+    """2026-07-05 doctrine: MULT_TABLE dropped to {12..19}. A fact still
+    classifies primitive as long as the LARGER operand clears the raised
+    floor — the smaller "table row" operand (6-9, 12) need not itself be in
+    MULT_TABLE. 13x7 must classify as mul.x13, not a coarse compound family."""
+    t = T("multiplication", a=13, b=7)
+    assert t.tier == "primitive" and t.key == "mul:7x13" and t.family == "mul.x13"
+    t = T("multiplication", a=7, b=13)  # operand order must not matter
+    assert t.tier == "primitive" and t.key == "mul:7x13" and t.family == "mul.x13"
+
+
+def test_multiplication_retired_single_digit_tables_are_now_compound():
+    """Facts where BOTH operands are below the raised floor (e.g. the old
+    9-times-table) no longer classify as a primitive per-table family."""
+    t = T("multiplication", a=9, b=8)
+    assert t.tier == "compound" and t.family == "mul.1dx1d"
+
+
 def test_division_inverse_facts():
+    t = T("division", a=91, b=13)
+    assert t.tier == "primitive" and t.key == "div:7x13" and t.family == "div.x13"
+
+
+def test_division_retired_single_digit_facts_are_now_compound():
     t = T("division", a=56, b=7)
-    assert t.tier == "primitive" and t.key == "div:7x8" and t.family == "div.x8"
+    assert t.tier == "compound" and t.family == "div.multi"
 
 
 def test_grounded_ops_are_compound():

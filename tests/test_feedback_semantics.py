@@ -78,13 +78,13 @@ class FakeStorage:
 def _make_primitive_attempt(
     attempt_id=1,
     skill_id="multiplication",
-    a=6, b=7,
+    a=6, b=13,
     correct=True,
     onset_latency_ms=900,
     resolution_latency_ms=1000,
     session_user="u1",
 ):
-    """mul:6x7 primitive (FSRS key = mul:6x7, family = mul.x7, tier = primitive)."""
+    """mul:6x13 primitive (FSRS key = mul:6x13, family = mul.x13, tier = primitive)."""
     return {
         "id": attempt_id,
         "skill_id": skill_id,
@@ -140,7 +140,7 @@ class TooEasyTests(unittest.TestCase):
         attempt = _make_primitive_attempt()
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, reason_code="too_easy")
-        state = storage.get_item_state("u1", "mul:6x7")
+        state = storage.get_item_state("u1", "mul:6x13")
         self.assertIsNotNone(state, "item_state should be created for too_easy")
         self.assertEqual(state["last_rating"], int(Rating.Easy))
 
@@ -150,7 +150,7 @@ class TooEasyTests(unittest.TestCase):
         storage = _storage_with_attempt(attempt)
         now = time.time()
         _apply(storage, attempt_id=1, reason_code="too_easy")
-        state = storage.get_item_state("u1", "mul:6x7")
+        state = storage.get_item_state("u1", "mul:6x13")
         # FSRS fuzzing spreads the Easy interval over ~6-11 days (stability
         # 8.3d, enable_fuzzing default True), so a 7-day threshold flaked on
         # ~28% of RNG draws. 5 days is below the fuzz floor and still proves
@@ -162,9 +162,9 @@ class TooEasyTests(unittest.TestCase):
         attempt = _make_primitive_attempt()
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, reason_code="too_easy")
-        state = storage.get_item_state("u1", "mul:6x7")
+        state = storage.get_item_state("u1", "mul:6x13")
         self.assertEqual(state["tier"], "primitive")
-        self.assertEqual(state["family"], "mul.x7")
+        self.assertEqual(state["family"], "mul.x13")
 
 
 # ── too_hard ───────────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ class TooHardTests(unittest.TestCase):
         attempt = _make_primitive_attempt()
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, reason_code="too_hard")
-        self.assertIsNone(storage.get_item_state("u1", "mul:6x7"))
+        self.assertIsNone(storage.get_item_state("u1", "mul:6x13"))
 
     def test_too_hard_no_cooldown(self):
         attempt = _make_primitive_attempt()
@@ -196,7 +196,7 @@ class SeenTooOftenTests(unittest.TestCase):
         before = time.time()
         _apply(storage, attempt_id=1, reason_code="seen_too_often")
         now = time.time()
-        until = storage._cooldowns.get(("u1", "mul:6x7"))
+        until = storage._cooldowns.get(("u1", "mul:6x13"))
         self.assertIsNotNone(until)
         self.assertAlmostEqual(until, before + 7 * 86400, delta=5)
 
@@ -205,16 +205,16 @@ class SeenTooOftenTests(unittest.TestCase):
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, reason_code="seen_too_often")
         active = storage.active_cooldowns("u1", time.time())
-        self.assertIn("mul:6x7", active)
+        self.assertIn("mul:6x13", active)
 
     def test_cooldown_expiry_not_in_active_when_past(self):
         """An expired cooldown (until in the past) must not appear in active_cooldowns."""
         attempt = _make_primitive_attempt()
         storage = _storage_with_attempt(attempt)
         # Manually set an already-expired cooldown
-        storage._cooldowns[("u1", "mul:6x7")] = time.time() - 1
+        storage._cooldowns[("u1", "mul:6x13")] = time.time() - 1
         active = storage.active_cooldowns("u1", time.time())
-        self.assertNotIn("mul:6x7", active)
+        self.assertNotIn("mul:6x13", active)
 
 
 # ── bad_problem ─────────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ class BadProblemTests(unittest.TestCase):
         # Two feedback rows on the SAME day (both at now)
         self._setup_bad_problem_days(storage, 1, [0, 1])
         _apply(storage, attempt_id=1, reason_code="bad_problem")
-        self.assertNotIn("mul:6x7", storage.excluded_keys("u1"))
+        self.assertNotIn("mul:6x13", storage.excluded_keys("u1"))
 
     def test_two_distinct_days_of_bad_problem_excludes(self):
         attempt = _make_primitive_attempt()
@@ -247,15 +247,15 @@ class BadProblemTests(unittest.TestCase):
         # One row today, one row yesterday
         self._setup_bad_problem_days(storage, 1, [0, -86400])
         _apply(storage, attempt_id=1, reason_code="bad_problem")
-        self.assertIn("mul:6x7", storage.excluded_keys("u1"))
+        self.assertIn("mul:6x13", storage.excluded_keys("u1"))
 
     def test_bad_problem_for_different_key_does_not_exclude_this_key(self):
         """Bad problem rows for a different attempt (different key) don't count."""
         attempt = _make_primitive_attempt(attempt_id=1)
-        other_attempt = _make_primitive_attempt(attempt_id=2, a=3, b=4)  # mul:3x4
+        other_attempt = _make_primitive_attempt(attempt_id=2, a=3, b=14)  # mul:3x14
         storage = _storage_with_attempt(attempt)
         storage._attempts[2] = other_attempt
-        # Two days of bad_problem feedback — but on other_attempt (mul:3x4)
+        # Two days of bad_problem feedback — but on other_attempt (mul:3x14)
         now = time.time()
         for offset in [0, -86400]:
             storage._bad_problem_rows.append({
@@ -272,10 +272,10 @@ class BadProblemTests(unittest.TestCase):
             "created_at": now,
         })
         _apply(storage, attempt_id=1, reason_code="bad_problem")
-        # mul:6x7 should NOT be excluded (only 1 day)
-        self.assertNotIn("mul:6x7", storage.excluded_keys("u1"))
-        # mul:3x4 is not excluded either (we only called apply on attempt 1)
-        self.assertNotIn("mul:3x4", storage.excluded_keys("u1"))
+        # mul:6x13 should NOT be excluded (only 1 day)
+        self.assertNotIn("mul:6x13", storage.excluded_keys("u1"))
+        # mul:3x14 is not excluded either (we only called apply on attempt 1)
+        self.assertNotIn("mul:3x14", storage.excluded_keys("u1"))
 
     def test_add_excluded_key_is_idempotent(self, tmp_path=None):
         """add_excluded_key twice for the same key must not raise or duplicate."""
@@ -293,7 +293,7 @@ class BadProblemTests(unittest.TestCase):
         _apply(storage, attempt_id=1, reason_code="bad_problem")  # second call
         keys = storage.excluded_keys("u1")
         # still just one entry
-        self.assertEqual(list(keys).count("mul:6x7"), 1)
+        self.assertEqual(list(keys).count("mul:6x13"), 1)
 
 
 # ── bare thumb=-1 ───────────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ class BareThumbDownTests(unittest.TestCase):
         attempt = _make_primitive_attempt(correct=True, onset_latency_ms=900)
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=-1, reason_code=None)
-        state = storage.get_item_state("u1", "mul:6x7")
+        state = storage.get_item_state("u1", "mul:6x13")
         self.assertIsNotNone(state)
         self.assertEqual(state["last_rating"], int(Rating.Easy))
 
@@ -315,14 +315,14 @@ class BareThumbDownTests(unittest.TestCase):
         attempt = _make_primitive_attempt(correct=True, onset_latency_ms=1500)
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=-1, reason_code=None)
-        self.assertIsNone(storage.get_item_state("u1", "mul:6x7"))
+        self.assertIsNone(storage.get_item_state("u1", "mul:6x13"))
 
     def test_thumb_down_wrong_primitive_no_change(self):
         """Primitive, wrong → store only (even if fast)."""
         attempt = _make_primitive_attempt(correct=False, onset_latency_ms=500)
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=-1, reason_code=None)
-        self.assertIsNone(storage.get_item_state("u1", "mul:6x7"))
+        self.assertIsNone(storage.get_item_state("u1", "mul:6x13"))
 
     def test_thumb_down_fast_correct_compound_grades_easy(self):
         """Compound, correct, resolution <= skill target → Easy."""
@@ -348,7 +348,7 @@ class BareThumbDownTests(unittest.TestCase):
         attempt = _make_primitive_attempt(correct=True, onset_latency_ms=500)
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=1, reason_code=None)
-        self.assertIsNone(storage.get_item_state("u1", "mul:6x7"))
+        self.assertIsNone(storage.get_item_state("u1", "mul:6x13"))
 
 
 # ── reason_code wins over thumb ─────────────────────────────────────────────
@@ -362,7 +362,7 @@ class ReasonCodePrecedenceTests(unittest.TestCase):
         attempt = _make_primitive_attempt(correct=True, onset_latency_ms=900)
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=-1, reason_code="too_easy")
-        state = storage.get_item_state("u1", "mul:6x7")
+        state = storage.get_item_state("u1", "mul:6x13")
         self.assertIsNotNone(state)
         self.assertEqual(state["last_rating"], int(Rating.Easy))
 
@@ -372,9 +372,9 @@ class ReasonCodePrecedenceTests(unittest.TestCase):
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=-1, reason_code="seen_too_often")
         # Cooldown should be set
-        self.assertIn("mul:6x7", storage.active_cooldowns("u1", time.time()))
+        self.assertIn("mul:6x13", storage.active_cooldowns("u1", time.time()))
         # No FSRS grade
-        state = storage.get_item_state("u1", "mul:6x7")
+        state = storage.get_item_state("u1", "mul:6x13")
         self.assertIsNone(state)
 
     def test_reason_code_too_hard_wins_over_thumb_plus(self):
@@ -382,7 +382,7 @@ class ReasonCodePrecedenceTests(unittest.TestCase):
         attempt = _make_primitive_attempt()
         storage = _storage_with_attempt(attempt)
         _apply(storage, attempt_id=1, thumb=1, reason_code="too_hard")
-        self.assertIsNone(storage.get_item_state("u1", "mul:6x7"))
+        self.assertIsNone(storage.get_item_state("u1", "mul:6x13"))
 
 
 # ── no-op cases ─────────────────────────────────────────────────────────────
@@ -426,28 +426,28 @@ class StorageCooldownTests(unittest.TestCase):
         # Use FakeStorage since tmp_path isn't available in plain unittest
         storage = FakeStorage()
         now = time.time()
-        storage.set_key_cooldown("u1", "mul:6x7", now + 1000)
+        storage.set_key_cooldown("u1", "mul:6x13", now + 1000)
         active = storage.active_cooldowns("u1", now)
-        self.assertIn("mul:6x7", active)
+        self.assertIn("mul:6x13", active)
 
     def test_upsert_cooldown_updates_until(self):
         storage = FakeStorage()
         now = time.time()
-        storage.set_key_cooldown("u1", "mul:6x7", now + 1000)
-        storage.set_key_cooldown("u1", "mul:6x7", now + 9999)  # override
-        until = storage._cooldowns[("u1", "mul:6x7")]
+        storage.set_key_cooldown("u1", "mul:6x13", now + 1000)
+        storage.set_key_cooldown("u1", "mul:6x13", now + 9999)  # override
+        until = storage._cooldowns[("u1", "mul:6x13")]
         self.assertAlmostEqual(until, now + 9999, delta=5)
 
     def test_excluded_key_per_user(self):
         storage = FakeStorage()
-        storage.add_excluded_key("u1", "mul:6x7", "bad_problem")
-        self.assertIn("mul:6x7", storage.excluded_keys("u1"))
-        self.assertNotIn("mul:6x7", storage.excluded_keys("u2"))
+        storage.add_excluded_key("u1", "mul:6x13", "bad_problem")
+        self.assertIn("mul:6x13", storage.excluded_keys("u1"))
+        self.assertNotIn("mul:6x13", storage.excluded_keys("u2"))
 
     def test_add_excluded_key_idempotent_fake(self):
         storage = FakeStorage()
-        storage.add_excluded_key("u1", "mul:6x7", "bad_problem")
-        storage.add_excluded_key("u1", "mul:6x7", "bad_problem")
+        storage.add_excluded_key("u1", "mul:6x13", "bad_problem")
+        storage.add_excluded_key("u1", "mul:6x13", "bad_problem")
         self.assertEqual(len(storage.excluded_keys("u1")), 1)
 
 
@@ -457,9 +457,9 @@ def test_storage_cooldown_real_db(tmp_path):
     s = Storage(tmp_path / "t.db")
     user_id = s.list_users()[0]["id"]
     now = time.time()
-    s.set_key_cooldown(user_id, "mul:6x7", now + 1000)
+    s.set_key_cooldown(user_id, "mul:6x13", now + 1000)
     active = s.active_cooldowns(user_id, now)
-    assert "mul:6x7" in active
+    assert "mul:6x13" in active
 
 
 def test_storage_cooldown_expiry_real_db(tmp_path):
@@ -468,8 +468,8 @@ def test_storage_cooldown_expiry_real_db(tmp_path):
     s = Storage(tmp_path / "t.db")
     user_id = s.list_users()[0]["id"]
     now = time.time()
-    s.set_key_cooldown(user_id, "mul:6x7", now - 1)  # already expired
-    assert "mul:6x7" not in s.active_cooldowns(user_id, now)
+    s.set_key_cooldown(user_id, "mul:6x13", now - 1)  # already expired
+    assert "mul:6x13" not in s.active_cooldowns(user_id, now)
 
 
 def test_storage_excluded_keys_real_db(tmp_path):
@@ -477,8 +477,8 @@ def test_storage_excluded_keys_real_db(tmp_path):
     from server.storage import Storage
     s = Storage(tmp_path / "t.db")
     user_id = s.list_users()[0]["id"]
-    s.add_excluded_key(user_id, "mul:6x7", "bad_problem")
-    assert "mul:6x7" in s.excluded_keys(user_id)
+    s.add_excluded_key(user_id, "mul:6x13", "bad_problem")
+    assert "mul:6x13" in s.excluded_keys(user_id)
 
 
 def test_storage_add_excluded_key_idempotent_real_db(tmp_path):
@@ -486,8 +486,8 @@ def test_storage_add_excluded_key_idempotent_real_db(tmp_path):
     from server.storage import Storage
     s = Storage(tmp_path / "t.db")
     user_id = s.list_users()[0]["id"]
-    s.add_excluded_key(user_id, "mul:6x7", "bad_problem")
-    s.add_excluded_key(user_id, "mul:6x7", "bad_problem")
+    s.add_excluded_key(user_id, "mul:6x13", "bad_problem")
+    s.add_excluded_key(user_id, "mul:6x13", "bad_problem")
     assert len(s.excluded_keys(user_id)) == 1
 
 
@@ -497,10 +497,10 @@ def test_storage_cooldown_upsert_real_db(tmp_path):
     s = Storage(tmp_path / "t.db")
     user_id = s.list_users()[0]["id"]
     now = time.time()
-    s.set_key_cooldown(user_id, "mul:6x7", now + 100)
-    s.set_key_cooldown(user_id, "mul:6x7", now + 99999)
+    s.set_key_cooldown(user_id, "mul:6x13", now + 100)
+    s.set_key_cooldown(user_id, "mul:6x13", now + 99999)
     active = s.active_cooldowns(user_id, now + 200)  # past first, within second
-    assert "mul:6x7" in active
+    assert "mul:6x13" in active
 
 
 # ── scheduler integration smoke ──────────────────────────────────────────────

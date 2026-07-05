@@ -16,12 +16,15 @@ nothing is hard-locked.
 """
 
 import json
+import logging
 import math
 import random
 import time
 from typing import Callable
 
-from server import diagnosis, family_stats, taxonomy
+from server import bones, diagnosis, family_stats, suppressions, taxonomy
+
+_log = logging.getLogger("feynman.scheduler")
 
 
 def pick_drill(
@@ -133,9 +136,28 @@ SKINS = {
 # Primitive foundations we guarantee at least one look at per session until the
 # user has ≥5 attempts in each. Ordered so bootstrap rotation prefers the
 # earliest-listed among equally-untested families (see _pick_bootstrap_family).
+#
+# 2026-07-05 doctrine: raised the floor to the 13-19 tables (taxonomy.MULT_TABLE
+# dropped 0-11 and 20). mul.x7 etc. are retired from this list — any attempts
+# already on record under those families are stats the weak-family lane may
+# still target (family-level only; weak slots pass target_fact=None, so they
+# never pin a specific fact). The DUE lane is the one that pins an exact fact
+# (_target_from_item_key): a due item for a retired family would have its
+# pinned target suppressed and silently re-sampled by generate()'s gate,
+# grading under the wrong key and never draining its due_at (zombie slot).
+# The due loop in build_session_plan checks suppressions itself and skips
+# (rather than serves) a due item whose pinned target would be suppressed.
+#
+# x12 is deliberately absent even though 12 stays in MULT_TABLE (it still
+# appears as the smaller operand in the pools; classification always keys on
+# the larger operand): a fact whose LARGER recalled operand is 12 has
+# max_operand <= 12 and is suppressed by the yaml rule, so the x12 families
+# are unreachable on fresh generation — bootstrap slots for them would
+# zombie-schedule (pinned first-look always suppressed, attempt count never
+# organically reaching 5).
 BOOTSTRAP_FAMILIES = (
-    [f"mul.x{n}" for n in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20)]
-    + [f"div.x{n}" for n in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20)]
+    [f"mul.x{n}" for n in (13, 14, 15, 16, 17, 18, 19)]
+    + [f"div.x{n}" for n in (13, 14, 15, 16, 17, 18, 19)]
     + ["add.bridge10", "sub.borrow20"]
 )
 
@@ -188,7 +210,13 @@ def build_session_plan(
 
     # 1. Due reviews, most overdue first. Items >1 day overdue bypass the
     #    recency/cooldown exclusion; excluded_keys always wins.
-    for item in storage.due_items(user_id, now, limit=length * 2):
+    active_suppressions = suppressions.load_active()
+    # Fetch headroom for the zombie guard below: suppressed (retired) items
+    # never drain, so they accrete at the head of ORDER BY due_at ASC — a
+    # length*2 window fills with skipped zombies and starves real reviews.
+    # 300 comfortably exceeds the whole item_state table (single-user DB,
+    # ~172 rows), so the guard always sees every real due item; cost nil.
+    for item in storage.due_items(user_id, now, limit=max(length * 2, 300)):
         if len(slots) >= length:
             break
         key = item["item_key"]
@@ -197,6 +225,13 @@ def build_session_plan(
         overdue_days = (now - item.get("due_at", now)) / 86400
         if key in blocked_unless_overdue and overdue_days < 1:
             continue
+        check = _due_suppression_check(key)
+        if check is not None:
+            skill_id, params = check
+            rule_name = suppressions.matches(skill_id, params, active_suppressions)
+            if rule_name:
+                _log.info("due.skip_suppressed item_key=%s rule=%s", key, rule_name)
+                continue
         slots.append(_slot_for_item(item, attempts, skill_targets))
         seen_keys.add(key)
 
@@ -402,15 +437,25 @@ def _bootstrap_slot(family: str, attempts: list[dict], skill_targets: dict) -> d
 
 
 def _bootstrap_fact(family: str) -> tuple[str, str, dict | None]:
-    """Pick a concrete primitive fact representing a bootstrap family."""
+    """Pick a concrete primitive fact representing a bootstrap family.
+
+    Partner values are drawn from the same 6/7/8/9/12 "table row" range the
+    generator pools use, which always clears suppressions.yaml's
+    ``max_operand<=12`` rule and by_ten/trivial_value: n (13-19, per
+    BOOTSTRAP_FAMILIES) paired with a partner <=12 keeps hi==n, so the served
+    fact actually lands in the family it was meant to bootstrap. The n<=12
+    branch is defensive only — no such family is in BOOTSTRAP_FAMILIES (see
+    the x12 note there) — and pairs with 13-19 so even a stray caller still
+    yields a legal, suppression-clearing fact.
+    """
     if family.startswith("mul.x"):
         n = int(family.removeprefix("mul.x"))
-        b = random.randint(2, 12)
+        b = random.choice([6, 7, 8, 9, 12]) if n >= 13 else random.choice([13, 14, 15, 16, 17, 18, 19])
         lo, hi = sorted((n, b))
         return "multiplication", f"mul:{lo}x{hi}", {"a": n, "b": b}
     if family.startswith("div.x"):
         n = int(family.removeprefix("div.x"))
-        b = random.randint(2, 12)
+        b = random.choice([6, 7, 8, 9, 12]) if n >= 13 else random.choice([13, 14, 15, 16, 17, 18, 19])
         lo, hi = sorted((n, b))
         return "division", f"div:{lo}x{hi}", {"a": n * b, "b": n}
     if family == "add.bridge10":
@@ -471,6 +516,40 @@ def _target_from_item_key(key: str) -> dict | None:
     if prefix in ("money", "weather"):
         return {"operation": rest}
     return None
+
+
+def _due_suppression_check(key: str) -> tuple[str, dict] | None:
+    """Build the (skill_id, params) pair to run a due item's pinned target
+    through ``suppressions.matches``, mirroring generator.py's ``_gen_*``
+    feature stamping EXACTLY so the check agrees with what generate() would
+    actually do with this target:
+
+        multiplication: features = bones.compute_features("*", (a, b))
+        division:       features = bones.compute_features("/", (b, a // b))
+                         (a, b here are dividend/divisor; the feature pair is
+                         divisor/quotient — see generator._gen_division)
+        addition:       features = bones.compute_features("+", (a, b))
+        subtraction:    features = bones.compute_features("-", (a, b))
+
+    Returns None when the key doesn't translate into an (a, b) pinned target
+    (compound families, pct:/money:/weather: grounded ops) — those pass
+    through unguarded, current behavior."""
+    target = _target_from_item_key(key)
+    if not target or "a" not in target or "b" not in target:
+        return None
+    skill_id = _skill_for_item_key(key)
+    a, b = target["a"], target["b"]
+    if skill_id == "multiplication":
+        features = bones.compute_features("*", (a, b))
+    elif skill_id == "division":
+        features = bones.compute_features("/", (b, a // b))
+    elif skill_id == "addition":
+        features = bones.compute_features("+", (a, b))
+    elif skill_id == "subtraction":
+        features = bones.compute_features("-", (a, b))
+    else:
+        return None
+    return skill_id, {"a": a, "b": b, "features": features}
 
 
 # ---- helpers ---------------------------------------------------------------

@@ -14,7 +14,7 @@ Prototyped in tools/taxonomy_v2.py against the full attempt history.
 from dataclasses import dataclass, field
 
 PRIMITIVE_ONSET_TARGET_MS = 1200
-MULT_TABLE = set(range(0, 13)) | {15, 20}
+MULT_TABLE = frozenset({12, 13, 14, 15, 16, 17, 18, 19})
 _COL = "oth"  # ones, tens, hundreds (column letters for family suffixes)
 _COL_WORDS = {"o": "ones", "t": "tens", "h": "hundreds"}
 
@@ -102,7 +102,7 @@ def classify(skill_id: str, parameters: dict) -> Taxon | None:
 
     if skill_id == "multiplication" and a is not None and b is not None:
         lo, hi = sorted([int(a), int(b)])
-        if lo in MULT_TABLE and hi in MULT_TABLE:
+        if hi in MULT_TABLE:
             return Taxon("primitive", f"mul.x{hi}", f"mul:{lo}x{hi}")
         fam = f"mul.{_digits(hi)}dx{_digits(lo)}d"
         return Taxon("compound", fam, fam)
@@ -112,7 +112,7 @@ def classify(skill_id: str, parameters: dict) -> Taxon | None:
         if b and a % b == 0:
             q = a // b
             lo, hi = sorted([b, q])
-            if lo in MULT_TABLE and hi in MULT_TABLE:
+            if hi in MULT_TABLE:
                 return Taxon("primitive", f"div.x{hi}", f"div:{lo}x{hi}")
         return Taxon("compound", "div.multi", "div.multi")
 
