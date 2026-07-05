@@ -36,8 +36,8 @@ class FeatureTaggingTests(unittest.TestCase):
 
 class SuppressionRuleTests(unittest.TestCase):
     def _params(self, a, b, **extra):
-        from server.generator import _compute_features
-        return {"a": a, "b": b, "features": _compute_features(a, b, extra=extra or None)}
+        from server import bones
+        return {"a": a, "b": b, "features": bones.compute_features("-", (a, b), extra=extra or None)}
 
     def _pred(self, feature, **cmp):
         # single-comparator kwarg, e.g. self._pred("abs_diff", lte=2)

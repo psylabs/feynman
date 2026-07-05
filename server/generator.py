@@ -11,29 +11,9 @@ Returns:
 import logging
 import random
 
-from server import money, suppressions, weather
+from server import bones, money, suppressions, weather
 
 _log = logging.getLogger("feynman.suppressions")
-
-
-def _crosses_ten(a: int, b: int, op: str) -> bool:
-    """True when a multiple of 10 lies strictly between the start value and
-    the result. Landing exactly on a ten does not count: 19-9=10 and 104+6=110
-    are invalid; 21-3=18 and 104+7=111 are valid. The ``hi - 1`` demotes a
-    result sitting exactly on a ten into the lower band so it reads as no
-    crossing. This is not the carry/borrow condition: regrouping fires on
-    ones >= 10, crossing fires on ones > 10.
-    """
-    c = a + b if op == "+" else a - b
-    lo, hi = sorted((a, c))
-    return (hi - 1) // 10 != lo // 10
-
-
-def _compute_features(a: int, b: int, *, extra: dict | None = None) -> dict:
-    f = {"abs_diff": abs(a - b), "min_operand": min(a, b), "max_operand": max(a, b)}
-    if extra:
-        f.update(extra)
-    return f
 
 
 def mastery_to_level(mastery: float) -> int:
@@ -59,18 +39,22 @@ def _gen_addition(level: int, target: dict | None = None) -> dict:
         "expected": float(a + b),
         "parameters": {
             "a": a, "b": b, "carry": carry, "level": level,
-            "features": _compute_features(a, b, extra={"has_carry": carry}),
+            "features": bones.compute_features("+", (a, b)),
         },
     }
 
 
 def _sample_addition(level: int) -> tuple[int, int]:
     """Foundation-lane sampler. Caps stay inside 0-40 sums."""
+    active = suppressions.load_active()
     if level <= 1:
         for _ in range(20):
             a = random.randint(0, 9)
             b = random.randint(0, 9)
-            if a + b <= 20 and _crosses_ten(a, b, "+"):
+            if a + b > 20:
+                continue
+            params = {"a": a, "b": b, "features": bones.compute_features("+", (a, b))}
+            if not suppressions.matches("addition", params, active):
                 return a, b
         return 9, 9
     if level == 2:
@@ -80,16 +64,20 @@ def _sample_addition(level: int) -> tuple[int, int]:
             if small + big > 30:
                 continue
             a, b = (small, big) if random.random() < 0.5 else (big, small)
-            if _crosses_ten(a, b, "+"):
+            params = {"a": a, "b": b, "features": bones.compute_features("+", (a, b))}
+            if not suppressions.matches("addition", params, active):
                 return a, b
-        return 9, 20
+        return 9, 16
     # level 3: both operands 10-20, sums <= 40
     for _ in range(20):
         a = random.randint(10, 20)
         b = random.randint(10, 20)
-        if a + b <= 40 and _crosses_ten(a, b, "+"):
+        if a + b > 40:
+            continue
+        params = {"a": a, "b": b, "features": bones.compute_features("+", (a, b))}
+        if not suppressions.matches("addition", params, active):
             return a, b
-    return 20, 20
+    return 17, 19
 
 
 def _addition_with_carry(level: int) -> tuple[int, int]:
@@ -115,12 +103,14 @@ def _addition_from_pattern(pattern: str, force_carry: bool) -> tuple[int, int]:
     # Two single-digit operands can only cross a ten via a carry, so the
     # no-carry preference is unsatisfiable there — crossing wins.
     can_cross_sans_carry = any(r[1] > 9 for r in ranges)
+    active = suppressions.load_active()
     for _ in range(50):
         a = random.randint(*ranges[0])
         b = random.randint(*ranges[1]) if len(ranges) > 1 else random.randint(*ranges[0])
         if a + b > cap_sum:
             continue
-        if not _crosses_ten(a, b, "+"):
+        params = {"a": a, "b": b, "features": bones.compute_features("+", (a, b))}
+        if suppressions.matches("addition", params, active):
             continue
         if force_carry and (a % 10) + (b % 10) < 10:
             continue
@@ -157,18 +147,20 @@ def _gen_subtraction(level: int, target: dict | None = None) -> dict:
         "expected": float(a - b),
         "parameters": {
             "a": a, "b": b, "borrow": borrow, "level": level,
-            "features": _compute_features(a, b, extra={"has_borrow": borrow}),
+            "features": bones.compute_features("-", (a, b)),
         },
     }
 
 
 def _sample_subtraction(level: int) -> tuple[int, int]:
     """Foundation-lane sampler. Stays inside 0-30 minuends."""
+    active = suppressions.load_active()
     if level <= 1:
         for _ in range(20):
             a = random.randint(5, 20)
             b = random.randint(0, min(9, a))
-            if _crosses_ten(a, b, "-"):
+            params = {"a": a, "b": b, "features": bones.compute_features("-", (a, b))}
+            if not suppressions.matches("subtraction", params, active):
                 return a, b
         return 12, 5
     if level == 2:
@@ -178,14 +170,16 @@ def _sample_subtraction(level: int) -> tuple[int, int]:
             b = random.randint(2, min(12, a - 1))
             if b < 1:
                 continue
-            if _crosses_ten(a, b, "-"):
+            params = {"a": a, "b": b, "features": bones.compute_features("-", (a, b))}
+            if not suppressions.matches("subtraction", params, active):
                 return a, b
         return 15, 8
     # level 3: minuend 20-30, subtrahend 5-20
     for _ in range(20):
         a = random.randint(20, 30)
         b = random.randint(5, min(20, a - 1))
-        if _crosses_ten(a, b, "-"):
+        params = {"a": a, "b": b, "features": bones.compute_features("-", (a, b))}
+        if not suppressions.matches("subtraction", params, active):
             return a, b
     return 25, 12
 
@@ -212,6 +206,7 @@ def _subtraction_from_hints(level: int, target: dict) -> tuple[int, int]:
     # A single-digit subtrahend can only cross a ten via a borrow, so the
     # no-borrow preference is unsatisfiable there — crossing wins.
     can_cross_sans_borrow = r_b[1] >= 10
+    active = suppressions.load_active()
     for _ in range(50):
         a = random.randint(*r_a)
         hi_b = min(r_b[1], a - 1) if r_a[0] >= 1 else r_b[1]
@@ -221,7 +216,8 @@ def _subtraction_from_hints(level: int, target: dict) -> tuple[int, int]:
         b = random.randint(lo_b, hi_b)
         if b < 0:
             continue
-        if not _crosses_ten(a, b, "-"):
+        params = {"a": a, "b": b, "features": bones.compute_features("-", (a, b))}
+        if suppressions.matches("subtraction", params, active):
             continue
         has_borrow = (a % 10) < (b % 10)
         if force_borrow and not has_borrow:
@@ -258,7 +254,7 @@ def _gen_multiplication(level: int, target: dict | None = None) -> dict:
         "prompt": f"What is {a} times {b}?",
         "expected": float(a * b),
         "parameters": {"a": a, "b": b, "level": level,
-                       "features": _compute_features(a, b)},
+                       "features": bones.compute_features("*", (a, b))},
     }
 
 
@@ -281,7 +277,7 @@ def _gen_division(level: int, target: dict | None = None) -> dict:
         "prompt": f"What is {a} divided by {b}?",
         "expected": float(a / b),
         "parameters": {"a": a, "b": b, "level": level,
-                       "features": _compute_features(a, b)},
+                       "features": bones.compute_features("/", (b, a // b))},
     }
 
 
