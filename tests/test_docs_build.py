@@ -21,7 +21,12 @@ class DocsBuildTests(unittest.TestCase):
         self.assertIn("Source: [suppressions.yaml]", md)
         self.assertIn("[server/suppressions.py]", md)
         self.assertIn("weather_math", md)
-        self.assertIn("trivial_diff", md)
+        # registered rule names render as-is; dict-form entries render legibly
+        self.assertIn("by_ten", md)
+        self.assertIn("abs_diff <= 2", md)
+        self.assertIn("abs_diff in [5, 10, 50, 100, 200, 300, 400, 500, 1000]", md)
+        self.assertIn("min_operand == 0", md)
+        self.assertIn("crosses_ten required", md)
         self.assertIn("Healthy grounded share: 0.35", md)
         self.assertIn("weather_math:temp_delta", md)
 

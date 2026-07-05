@@ -144,7 +144,7 @@ def generate_config_reference(root: Path) -> str:
         "| --- | --- |",
     ])
     for skill_id in sorted(active_suppressions):
-        names = ", ".join(active_suppressions.get(skill_id) or [])
+        names = ", ".join(_rule_label(e) for e in active_suppressions.get(skill_id) or [])
         out.append(f"| {skill_id} | {names} |")
 
     out.extend([
@@ -352,6 +352,25 @@ def _yes_no(value: object) -> str:
 
 def _inline_dict(data: dict) -> str:
     return ", ".join(f"{key}: {_inline_value(value)}" for key, value in data.items())
+
+
+# Human-readable rendering of suppressions.yaml dict-form entries
+# ({feature: <name>, <cmp>: <value>} — see server/suppressions.py).
+_CMP_LABELS = {"lte": "<=", "gte": ">=", "eq": "=="}
+
+
+def _rule_label(entry: object) -> str:
+    if not isinstance(entry, dict):
+        return str(entry)
+    feature = entry.get("feature", "?")
+    if "require" in entry:
+        return f"{feature} required"
+    for cmp, sym in _CMP_LABELS.items():
+        if cmp in entry:
+            return f"{feature} {sym} {entry[cmp]}"
+    if "in" in entry:
+        return f"{feature} in {_inline_value(entry['in'])}"
+    return _inline_dict(entry)
 
 
 def _inline_value(value: object) -> str:
