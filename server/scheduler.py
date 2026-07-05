@@ -136,16 +136,22 @@ SKINS = {
 #
 # 2026-07-05 doctrine: raised the floor to the 13-19 tables (taxonomy.MULT_TABLE
 # dropped 0-11 and 20). mul.x7 etc. are retired from this list — any attempts
-# already on record under those families (or under mul.x12/div.x12, which stay
-# in MULT_TABLE for classification but whose max_operand==12 always trips the
-# new suppression floor) are stats the weak-family/bootstrap lanes may still
-# see; a pinned target for one of those families gets suppressed and
+# already on record under those families are stats the weak-family lane may
+# still target; a pinned target for a retired family gets suppressed and
 # re-sampled by generate()'s gate rather than served as-is. That drift is
 # accepted (see generator.py/suppressions.yaml) — the re-sampled result still
 # lands in a currently-legal family, it's just not the one that was pinned.
+#
+# x12 is deliberately absent even though 12 stays in MULT_TABLE (it still
+# appears as the smaller operand in the pools; classification always keys on
+# the larger operand): a fact whose LARGER recalled operand is 12 has
+# max_operand <= 12 and is suppressed by the yaml rule, so the x12 families
+# are unreachable on fresh generation — bootstrap slots for them would
+# zombie-schedule (pinned first-look always suppressed, attempt count never
+# organically reaching 5).
 BOOTSTRAP_FAMILIES = (
-    [f"mul.x{n}" for n in (12, 13, 14, 15, 16, 17, 18, 19)]
-    + [f"div.x{n}" for n in (12, 13, 14, 15, 16, 17, 18, 19)]
+    [f"mul.x{n}" for n in (13, 14, 15, 16, 17, 18, 19)]
+    + [f"div.x{n}" for n in (13, 14, 15, 16, 17, 18, 19)]
     + ["add.bridge10", "sub.borrow20"]
 )
 
@@ -416,21 +422,21 @@ def _bootstrap_fact(family: str) -> tuple[str, str, dict | None]:
 
     Partner values are drawn from the same 6/7/8/9/12 "table row" range the
     generator pools use, which always clears suppressions.yaml's
-    ``max_operand<=12`` rule and by_ten/trivial_value: n (12-19) paired with a
-    partner <=12 keeps hi==n, so the served fact actually lands in the family
-    it was meant to bootstrap. Family x12 is the one exception — n==12 can
-    never itself clear ``max_operand>=13``, so its partner is drawn from
-    13-19 instead: still a legal, suppression-clearing fact, just credited to
-    a different (currently-legal) family, per the BOOTSTRAP_FAMILIES comment.
+    ``max_operand<=12`` rule and by_ten/trivial_value: n (13-19, per
+    BOOTSTRAP_FAMILIES) paired with a partner <=12 keeps hi==n, so the served
+    fact actually lands in the family it was meant to bootstrap. The n<=12
+    branch is defensive only — no such family is in BOOTSTRAP_FAMILIES (see
+    the x12 note there) — and pairs with 13-19 so even a stray caller still
+    yields a legal, suppression-clearing fact.
     """
     if family.startswith("mul.x"):
         n = int(family.removeprefix("mul.x"))
-        b = random.choice([13, 14, 15, 16, 17, 18, 19]) if n <= 12 else random.choice([6, 7, 8, 9, 12])
+        b = random.choice([6, 7, 8, 9, 12]) if n >= 13 else random.choice([13, 14, 15, 16, 17, 18, 19])
         lo, hi = sorted((n, b))
         return "multiplication", f"mul:{lo}x{hi}", {"a": n, "b": b}
     if family.startswith("div.x"):
         n = int(family.removeprefix("div.x"))
-        b = random.choice([13, 14, 15, 16, 17, 18, 19]) if n <= 12 else random.choice([6, 7, 8, 9, 12])
+        b = random.choice([6, 7, 8, 9, 12]) if n >= 13 else random.choice([13, 14, 15, 16, 17, 18, 19])
         lo, hi = sorted((n, b))
         return "division", f"div:{lo}x{hi}", {"a": n * b, "b": n}
     if family == "add.bridge10":

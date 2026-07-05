@@ -211,6 +211,22 @@ class DueFirstTests(unittest.TestCase):
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_bootstrap_families_exclude_unreachable_x12(self):
+        """mul.x12/div.x12 are unreachable on fresh generation (a fact whose
+        LARGER recalled operand is 12 has max_operand <= 12 and is suppressed
+        by the yaml rule), so bootstrapping them would zombie-schedule: the
+        pinned first-look would always be suppressed and re-sampled, and the
+        family's attempt count could never organically reach 5."""
+        for prefix in ("mul.x", "div.x"):
+            tables = sorted(
+                int(f.removeprefix(prefix))
+                for f in scheduler.BOOTSTRAP_FAMILIES
+                if f.startswith(prefix)
+            )
+            self.assertEqual(tables, [13, 14, 15, 16, 17, 18, 19], prefix)
+        self.assertIn("add.bridge10", scheduler.BOOTSTRAP_FAMILIES)
+        self.assertIn("sub.borrow20", scheduler.BOOTSTRAP_FAMILIES)
+
     def test_zero_division_user_gets_bootstrap_slot(self):
         # A user with lots of multiplication but no division: bootstrap must
         # inject at least one mul:/div: primitive.
