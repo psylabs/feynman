@@ -16,6 +16,19 @@ from server import money, suppressions, weather
 _log = logging.getLogger("feynman.suppressions")
 
 
+def _crosses_ten(a: int, b: int, op: str) -> bool:
+    """True when a multiple of 10 lies strictly between the start value and
+    the result. Landing exactly on a ten does not count: 19-9=10 and 104+6=110
+    are invalid; 21-3=18 and 104+7=111 are valid. The ``hi - 1`` demotes a
+    result sitting exactly on a ten into the lower band so it reads as no
+    crossing. This is not the carry/borrow condition: regrouping fires on
+    ones >= 10, crossing fires on ones > 10.
+    """
+    c = a + b if op == "+" else a - b
+    lo, hi = sorted((a, c))
+    return (hi - 1) // 10 != lo // 10
+
+
 def _compute_features(a: int, b: int, *, extra: dict | None = None) -> dict:
     f = {"abs_diff": abs(a - b), "min_operand": min(a, b), "max_operand": max(a, b)}
     if extra:
@@ -57,21 +70,24 @@ def _sample_addition(level: int) -> tuple[int, int]:
         for _ in range(20):
             a = random.randint(0, 9)
             b = random.randint(0, 9)
-            if a + b <= 20:
+            if a + b <= 20 and _crosses_ten(a, b, "+"):
                 return a, b
         return 9, 9
     if level == 2:
         for _ in range(20):
             small = random.randint(1, 9)
             big = random.randint(10, 20)
-            if small + big <= 30:
-                return (small, big) if random.random() < 0.5 else (big, small)
+            if small + big > 30:
+                continue
+            a, b = (small, big) if random.random() < 0.5 else (big, small)
+            if _crosses_ten(a, b, "+"):
+                return a, b
         return 9, 20
     # level 3: both operands 10-20, sums <= 40
     for _ in range(20):
         a = random.randint(10, 20)
         b = random.randint(10, 20)
-        if a + b <= 40:
+        if a + b <= 40 and _crosses_ten(a, b, "+"):
             return a, b
     return 20, 20
 
@@ -96,14 +112,19 @@ def _addition_from_pattern(pattern: str, force_carry: bool) -> tuple[int, int]:
     parts = pattern.split("+")
     ranges = [_digit_range(p) for p in parts]
     cap_sum = 40
+    # Two single-digit operands can only cross a ten via a carry, so the
+    # no-carry preference is unsatisfiable there — crossing wins.
+    can_cross_sans_carry = any(r[1] > 9 for r in ranges)
     for _ in range(50):
         a = random.randint(*ranges[0])
         b = random.randint(*ranges[1]) if len(ranges) > 1 else random.randint(*ranges[0])
         if a + b > cap_sum:
             continue
+        if not _crosses_ten(a, b, "+"):
+            continue
         if force_carry and (a % 10) + (b % 10) < 10:
             continue
-        if not force_carry and (a % 10) + (b % 10) >= 10:
+        if not force_carry and can_cross_sans_carry and (a % 10) + (b % 10) >= 10:
             continue
         return a, b
     return a, b
@@ -144,9 +165,12 @@ def _gen_subtraction(level: int, target: dict | None = None) -> dict:
 def _sample_subtraction(level: int) -> tuple[int, int]:
     """Foundation-lane sampler. Stays inside 0-30 minuends."""
     if level <= 1:
-        a = random.randint(5, 20)
-        b = random.randint(0, min(9, a))
-        return a, b
+        for _ in range(20):
+            a = random.randint(5, 20)
+            b = random.randint(0, min(9, a))
+            if _crosses_ten(a, b, "-"):
+                return a, b
+        return 12, 5
     if level == 2:
         # Force borrow practice within 0-20
         for _ in range(20):
@@ -154,13 +178,15 @@ def _sample_subtraction(level: int) -> tuple[int, int]:
             b = random.randint(2, min(12, a - 1))
             if b < 1:
                 continue
-            return a, b
+            if _crosses_ten(a, b, "-"):
+                return a, b
         return 15, 8
     # level 3: minuend 20-30, subtrahend 5-20
     for _ in range(20):
         a = random.randint(20, 30)
         b = random.randint(5, min(20, a - 1))
-        return a, b
+        if _crosses_ten(a, b, "-"):
+            return a, b
     return 25, 12
 
 
@@ -183,6 +209,9 @@ def _subtraction_from_hints(level: int, target: dict) -> tuple[int, int]:
     else:
         r_a, r_b = (20, 30), (5, 20)
 
+    # A single-digit subtrahend can only cross a ten via a borrow, so the
+    # no-borrow preference is unsatisfiable there — crossing wins.
+    can_cross_sans_borrow = r_b[1] >= 10
     for _ in range(50):
         a = random.randint(*r_a)
         hi_b = min(r_b[1], a - 1) if r_a[0] >= 1 else r_b[1]
@@ -192,10 +221,12 @@ def _subtraction_from_hints(level: int, target: dict) -> tuple[int, int]:
         b = random.randint(lo_b, hi_b)
         if b < 0:
             continue
+        if not _crosses_ten(a, b, "-"):
+            continue
         has_borrow = (a % 10) < (b % 10)
         if force_borrow and not has_borrow:
             continue
-        if not force_borrow and has_borrow:
+        if not force_borrow and can_cross_sans_borrow and has_borrow:
             continue
         return a, b
     return a, max(0, b)
