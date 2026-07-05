@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+import unittest.mock
 from server import generator
 from server import suppressions
 
@@ -32,6 +33,112 @@ class FeatureTaggingTests(unittest.TestCase):
         self.assertIn("abs_diff", f)
         self.assertEqual(f["abs_diff"], abs(result["parameters"]["stronger"] - result["parameters"]["calmer"]))
         self.assertEqual(f["operation"], "wind_delta")
+        self.assertIn("crosses_ten", f)
+        self.assertTrue(f["crosses_ten"])
+
+
+class WeatherCrossingTests(unittest.TestCase):
+    """2026-07-05 bones-doctrine: weather deltas stamp crosses_ten via
+    bones.compute_features, and the generation-side pickers pre-filter for
+    it so the suppression gate's retry budget isn't burned."""
+
+    def _loc(self):
+        return {"name": "Test", "lat": 0.0, "lon": 0.0}
+
+    def test_temp_delta_pair_always_crosses_ten(self):
+        from server import weather
+        forecast = weather._fallback_forecast()
+        for _ in range(50):
+            result = weather._temp_delta(self._loc(), forecast)
+            if result["parameters"]["operation"] != "temp_delta":
+                continue  # fell back to daily_range; covered elsewhere
+            f = result["parameters"]["features"]
+            self.assertTrue(f["crosses_ten"], f)
+
+    def test_wind_delta_pair_always_crosses_ten(self):
+        from server import weather
+        forecast = weather._fallback_forecast()
+        for _ in range(50):
+            result = weather._wind_delta(self._loc(), forecast)
+            if result["parameters"]["operation"] != "wind_delta":
+                continue
+            f = result["parameters"]["features"]
+            self.assertTrue(f["crosses_ten"], f)
+
+    def test_daily_range_always_crosses_ten_on_fallback_forecast(self):
+        # Every day in _fallback_forecast has a hi/lo spread that crosses a
+        # ten, so the crossing-day picker should always find one.
+        from server import weather
+        forecast = weather._fallback_forecast()
+        for _ in range(50):
+            result = weather._daily_range(self._loc(), forecast)
+            f = result["parameters"]["features"]
+            self.assertTrue(f["crosses_ten"], f)
+
+    def test_pick_distinct_pair_rejects_flat_decade(self):
+        # Every pair sits in the 60s decade with no ten strictly between:
+        # distinct rounded values, but never a crossing.
+        from server import weather
+        forecast = {
+            "dates": [f"2026-07-{d:02d}" for d in range(1, 8)],
+            "t_max": [62, 63, 64, 65, 66, 67, 68],
+        }
+        for _ in range(20):
+            self.assertIsNone(weather._pick_distinct_pair(forecast, "t_max"))
+
+    def test_temp_delta_falls_back_when_forecast_never_crosses(self):
+        from server import weather
+        forecast = {
+            "dates": [f"2026-07-{d:02d}" for d in range(1, 8)],
+            "t_max": [62, 63, 64, 65, 66, 67, 68],
+            "t_min": [49, 52, 55, 51, 44, 47, 53],
+            "wind_max": [9, 12, 15, 11, 7, 14, 10],
+        }
+        for _ in range(20):
+            result = weather._temp_delta(self._loc(), forecast)
+            self.assertEqual(result["parameters"]["operation"], "daily_range")
+
+    def test_daily_range_prefers_the_one_crossing_day(self):
+        from server import weather
+        forecast = {
+            "dates": ["2026-07-01", "2026-07-02", "2026-07-03"],
+            # day 0: 65/64 no cross (same decade). day 1: 72/68 crosses (70).
+            # day 2: 61/60 no cross (landing exactly on ten doesn't count).
+            "t_max": [65, 72, 61],
+            "t_min": [64, 68, 60],
+        }
+        for _ in range(20):
+            result = weather._daily_range(self._loc(), forecast)
+            self.assertEqual(result["parameters"]["high"], 72)
+            self.assertEqual(result["parameters"]["low"], 68)
+            self.assertTrue(result["parameters"]["features"]["crosses_ten"])
+
+    def test_daily_range_falls_back_when_no_day_crosses(self):
+        from server import weather
+        forecast = {
+            "dates": ["2026-07-01", "2026-07-02", "2026-07-03"],
+            "t_max": [65, 66, 67],
+            "t_min": [61, 62, 63],
+        }
+        for _ in range(20):
+            result = weather._daily_range(self._loc(), forecast)
+            self.assertFalse(result["parameters"]["features"]["crosses_ten"])
+            self.assertIn(result["parameters"]["high"], (65, 66, 67))
+
+    def test_generate_weather_math_never_yields_crosses_ten_false(self):
+        # Integration: generate()'s suppression gate + the pre-filters above
+        # mean a returned weather_math result never carries crosses_ten=False.
+        from server import suppressions as s
+        from server import weather
+        s.load_active(force=True)
+        with unittest.mock.patch.object(
+            weather, "load_forecast", lambda location: weather._fallback_forecast()
+        ):
+            for _ in range(100):
+                result = generator.generate("weather_math")
+                f = result["parameters"].get("features")
+                if f is not None and "crosses_ten" in f:
+                    self.assertTrue(f["crosses_ten"], result["parameters"])
 
 
 class SuppressionRuleTests(unittest.TestCase):
