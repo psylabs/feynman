@@ -16,12 +16,15 @@ nothing is hard-locked.
 """
 
 import json
+import logging
 import math
 import random
 import time
 from typing import Callable
 
-from server import diagnosis, family_stats, taxonomy
+from server import bones, diagnosis, family_stats, suppressions, taxonomy
+
+_log = logging.getLogger("feynman.scheduler")
 
 
 def pick_drill(
@@ -137,10 +140,13 @@ SKINS = {
 # 2026-07-05 doctrine: raised the floor to the 13-19 tables (taxonomy.MULT_TABLE
 # dropped 0-11 and 20). mul.x7 etc. are retired from this list — any attempts
 # already on record under those families are stats the weak-family lane may
-# still target; a pinned target for a retired family gets suppressed and
-# re-sampled by generate()'s gate rather than served as-is. That drift is
-# accepted (see generator.py/suppressions.yaml) — the re-sampled result still
-# lands in a currently-legal family, it's just not the one that was pinned.
+# still target (family-level only; weak slots pass target_fact=None, so they
+# never pin a specific fact). The DUE lane is the one that pins an exact fact
+# (_target_from_item_key): a due item for a retired family would have its
+# pinned target suppressed and silently re-sampled by generate()'s gate,
+# grading under the wrong key and never draining its due_at (zombie slot).
+# The due loop in build_session_plan checks suppressions itself and skips
+# (rather than serves) a due item whose pinned target would be suppressed.
 #
 # x12 is deliberately absent even though 12 stays in MULT_TABLE (it still
 # appears as the smaller operand in the pools; classification always keys on
@@ -204,6 +210,7 @@ def build_session_plan(
 
     # 1. Due reviews, most overdue first. Items >1 day overdue bypass the
     #    recency/cooldown exclusion; excluded_keys always wins.
+    active_suppressions = suppressions.load_active()
     for item in storage.due_items(user_id, now, limit=length * 2):
         if len(slots) >= length:
             break
@@ -213,6 +220,13 @@ def build_session_plan(
         overdue_days = (now - item.get("due_at", now)) / 86400
         if key in blocked_unless_overdue and overdue_days < 1:
             continue
+        check = _due_suppression_check(key)
+        if check is not None:
+            skill_id, params = check
+            rule_name = suppressions.matches(skill_id, params, active_suppressions)
+            if rule_name:
+                _log.info("due.skip_suppressed item_key=%s rule=%s", key, rule_name)
+                continue
         slots.append(_slot_for_item(item, attempts, skill_targets))
         seen_keys.add(key)
 
@@ -497,6 +511,40 @@ def _target_from_item_key(key: str) -> dict | None:
     if prefix in ("money", "weather"):
         return {"operation": rest}
     return None
+
+
+def _due_suppression_check(key: str) -> tuple[str, dict] | None:
+    """Build the (skill_id, params) pair to run a due item's pinned target
+    through ``suppressions.matches``, mirroring generator.py's ``_gen_*``
+    feature stamping EXACTLY so the check agrees with what generate() would
+    actually do with this target:
+
+        multiplication: features = bones.compute_features("*", (a, b))
+        division:       features = bones.compute_features("/", (b, a // b))
+                         (a, b here are dividend/divisor; the feature pair is
+                         divisor/quotient — see generator._gen_division)
+        addition:       features = bones.compute_features("+", (a, b))
+        subtraction:    features = bones.compute_features("-", (a, b))
+
+    Returns None when the key doesn't translate into an (a, b) pinned target
+    (compound families, pct:/money:/weather: grounded ops) — those pass
+    through unguarded, current behavior."""
+    target = _target_from_item_key(key)
+    if not target or "a" not in target or "b" not in target:
+        return None
+    skill_id = _skill_for_item_key(key)
+    a, b = target["a"], target["b"]
+    if skill_id == "multiplication":
+        features = bones.compute_features("*", (a, b))
+    elif skill_id == "division":
+        features = bones.compute_features("/", (b, a // b))
+    elif skill_id == "addition":
+        features = bones.compute_features("+", (a, b))
+    elif skill_id == "subtraction":
+        features = bones.compute_features("-", (a, b))
+    else:
+        return None
+    return skill_id, {"a": a, "b": b, "features": features}
 
 
 # ---- helpers ---------------------------------------------------------------
