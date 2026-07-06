@@ -196,11 +196,11 @@ class TestValidate(unittest.TestCase):
         """Prompt with $1,250 in args should be accepted (comma normalization).
         Uses charge_total/add_list — split_bill is no longer forgeable."""
         cand = {
-            "prompt": "You spent $1,250 at X and $250 at Y on Monday. What's the total?",
+            "prompt": "You spent $1,256 at X and $257 at Y on Monday. What's the total?",
             "skill_id": "money_arithmetic",
             "operation": "charge_total",
             "op": "add_list",
-            "args": [1250, 250],
+            "args": [1256, 257],
             "source": "test",
         }
         reasons = _validate(cand, set())
@@ -514,16 +514,15 @@ class TestValidate(unittest.TestCase):
     def test_op_operation_match_accepted(self):
         """The same addition problem correctly labeled charge_total passes.
 
-        Uses (12, 23, 14), not round-ten (10, 20, 30): 10+20 reduces to (1, 3)
-        after stripping trailing zeros and fails the bones crosses_ten rule
-        (money_arithmetic requires every running-sum step to cross a ten).
+        Uses (17, 26, 15): every running-sum step crosses a ten AND carries
+        (money_arithmetic requires both — crosses_ten + has_carry).
         """
         cand = {
-            "prompt": "You spent $12, $23 and $14 on Monday. What's the total?",
+            "prompt": "You spent $17, $26 and $15 on Monday. What's the total?",
             "skill_id": "money_arithmetic",
             "operation": "charge_total",
             "op": "add_list",
-            "args": [12, 23, 14],
+            "args": [17, 26, 15],
             "source": "test",
         }
         reasons = _validate(cand, set())

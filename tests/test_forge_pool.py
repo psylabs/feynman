@@ -33,7 +33,7 @@ def _make_entry(
         "skill_id": skill_id,
         "operation": operation,
         "op": op,
-        "args": args if args is not None else [15, 120],
+        "args": args if args is not None else [15, 127],
         "source": source,
         "created_at": 1_700_000_000.0,
         "used": used,
@@ -155,11 +155,11 @@ class TestMoneyForgeIntegration(unittest.TestCase):
         # reduction and fail the money_arithmetic crosses_ten:require rule.
         return _make_entry(
             id="moneyentry01",
-            prompt="You had 2 charges at Grocery: $13 and $24. About what's the total?",
+            prompt="You had 2 charges at Grocery: $17 and $24. About what's the total?",
             skill_id="money_arithmetic",
             operation="charge_total",
             op="add_list",
-            args=[13, 24],
+            args=[17, 24],
             used=False,
         )
 
@@ -172,12 +172,12 @@ class TestMoneyForgeIntegration(unittest.TestCase):
                 result = money.generate_problem(target={"operation": "charge_total"})
 
         self.assertEqual(result["prompt"], entry["prompt"])
-        self.assertEqual(result["expected"], 37.0)  # add_list(13, 24) = 37
+        self.assertEqual(result["expected"], 41.0)  # add_list(17, 24) = 41
         self.assertEqual(result["parameters"]["source"], "forge")
         self.assertEqual(result["parameters"]["forge_id"], "moneyentry01")
         self.assertEqual(result["parameters"]["operation"], "charge_total")
         # Task 7: forge entries stamp bones features into served parameters.
-        self.assertEqual(result["parameters"]["features"]["min_operand"], 13)
+        self.assertEqual(result["parameters"]["features"]["min_operand"], 17)
         self.assertEqual(result["parameters"]["features"]["max_operand"], 24)
         self.assertTrue(result["parameters"]["features"]["crosses_ten"])
 
@@ -390,7 +390,7 @@ class TestMoneyPlaidOpsExcluded(unittest.TestCase):
             skill_id="money_arithmetic",
             operation=operation,
             op="pct_of",
-            args=[15, 120],
+            args=[15, 127],
             used=False,
         )
 
@@ -437,15 +437,15 @@ class TestPinnedTargetSkipsPool(unittest.TestCase):
     """target with extra keys must not consume a pool entry in either module."""
 
     def _money_pool_entry(self) -> dict:
-        # (13, 24), not (30, 20): 30+20 reduces to (3, 5) after stripping
-        # trailing zeros and fails the money_arithmetic crosses_ten rule.
+        # (17, 24), not (30, 20) or (13, 24): the pair must both cross a ten
+        # on the running sum AND carry (money crosses_ten + has_carry rules).
         return _make_entry(
             id="money_pinned01",
-            prompt="You had 2 charges at Grocery: $13 and $24. About what's the total?",
+            prompt="You had 2 charges at Grocery: $17 and $24. About what's the total?",
             skill_id="money_arithmetic",
             operation="charge_total",
             op="add_list",
-            args=[13, 24],
+            args=[17, 24],
             used=False,
         )
 
